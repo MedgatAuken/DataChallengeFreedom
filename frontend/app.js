@@ -25,6 +25,14 @@
 
   const NA = 'NA';
 
+  /**
+   * Значение ответа в формате JSON 1.0 → внутреннее значение интерфейса.
+   * true = «Да», false = «Нет», null = N/A, число = ступень шкалы. Внутри N/A хранится как 'NA',
+   * чтобы отличать его от «ответа ещё нет» (undefined). null из JSON 1.0 тоже означает N/A —
+   * ни в подписи, ни в расчёте он не может превратиться в «Нет» или пропуск.
+   */
+  const normValue = (v) => (v === null || v === NA ? NA : v);
+
   function roundTo(x, digits) {
     const f = Math.pow(10, digits);
     return Math.round((x + Number.EPSILON) * f) / f;
@@ -36,7 +44,7 @@
 
   /**
    * @param checklist  { criteria: [...], sections: [...], rounding }
-   * @param answers    { [criterionId]: { value: true | false | number | 'NA', ... } }
+   * @param answers    { [criterionId]: { value: true | false | number | null | 'NA', ... } } — null и 'NA' = N/A
    * @returns { total, max, complete, rows, sections, critical_errors, has_critical }
    *   total = null, если применимых критериев с весом нет.
    */
@@ -48,7 +56,7 @@
     let complete = true;
 
     for (const c of checklist.criteria) {
-      const value = answers[c.id] ? answers[c.id].value : undefined;
+      const value = answers[c.id] ? normValue(answers[c.id].value) : undefined;
       const row = { id: c.id, section: c.section, value, weight: Number(c.weight) || 0 };
 
       if (c.type === 'critical') {
@@ -60,7 +68,7 @@
       } else if (value === NA) {
         row.kind = c.na_allowed ? 'na' : 'invalid_na'; // N/A только там, где он разрешён
         if (!c.na_allowed) complete = false;
-      } else if (value === undefined || value === null) {
+      } else if (value === undefined) {
         row.kind = 'missing';
         complete = false;
       } else {
@@ -755,14 +763,19 @@
       : ev ? 'Переоценить оператора' : 'Оценить оператора';
   }
 
+  /** Подпись ответа: true → «Да», false → «Нет», null/'NA' → «N/A», число → «7 / 10». */
   function answerLabel(c, value) {
+    value = normValue(value);
     if (value === NA) return 'N/A';
     if (value === undefined) return '—';
     if (c.type === 'scale') return `${value} / ${scaleMax(c)}`;
-    return value ? 'Да' : 'Нет';
+    if (value === true) return 'Да';
+    if (value === false) return 'Нет';
+    return String(value); // неожиданный тип — показываем как есть, а не подменяем «Да»/«Нет»
   }
 
   function answerTone(c, value) {
+    value = normValue(value);
     if (value === NA) return 'na';
     if (value === undefined) return '';
     if (c.type === 'critical') return value ? 'no' : 'yes'; // «Да» в грубых ошибках — плохо
@@ -1010,7 +1023,7 @@
 
     // Есть апелляция: проверяющий видит спорную оценку, комментарий и фрагмент диалога.
     const [label, cls] = APPEAL_STATUS[appeal.status] || [appeal.status, ''];
-    const origValue = appeal.original_answer ? appeal.original_answer.value : undefined;
+    const origValue = appeal.original_answer ? normValue(appeal.original_answer.value) : undefined;
     const fragment = (appeal.original_answer?.evidence || [])
       .slice(0, 3)
       .map((turn) => {
@@ -1063,7 +1076,7 @@
       );
     }
 
-    const origValue = appeal.original_answer ? appeal.original_answer.value : undefined;
+    const origValue = appeal.original_answer ? normValue(appeal.original_answer.value) : undefined;
     const children = [h('label', { class: 'inline-form__label' }, form.kind === 'confirm' ? 'Подтвердить оценку' : 'Изменить оценку')];
     let select = null;
     let preview = null;
@@ -1264,7 +1277,7 @@
   async function submitDecision(ev, c, appeal, kind, value, reason) {
     reason = (reason || '').trim();
     if (!reason) return setStatus('Укажите причину решения', true);
-    const origValue = appeal.original_answer ? appeal.original_answer.value : undefined;
+    const origValue = appeal.original_answer ? normValue(appeal.original_answer.value) : undefined;
     if (kind === 'change' && (value === undefined || sameValue(value, origValue))) {
       return setStatus('Новая оценка совпадает с исходной — используйте «Подтвердить оценку»', true);
     }
