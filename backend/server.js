@@ -273,7 +273,13 @@ async function handleApi(req, res, url) {
     try {
       return sendJson(res, 200, await evaluationsInFlight.get(key));
     } catch (err) {
-      throw httpError(err.status || 502, `Оценка не выполнена: ${err.message}`);
+      // Код ошибки передаётся фронтенду, чтобы показать понятное сообщение:
+      // INVALID_JSON / RULES_VIOLATION / REFUSAL / MAX_TOKENS (evaluator.js) или API_<статус> (Anthropic API).
+      const code =
+        err.code ||
+        (err.status ? `API_${err.status}` : /timeout/i.test(err.name) ? 'API_TIMEOUT' : /connection/i.test(err.name) ? 'API_CONNECTION' : 'EVALUATION_FAILED');
+      console.error(`[evaluate] ${key}: ${code} — ${err.message}`);
+      throw Object.assign(httpError(502, `Оценка не выполнена: ${err.message}`), { code });
     }
   }
 
@@ -324,7 +330,7 @@ const server = createServer(async (req, res) => {
   } catch (err) {
     const status = err.status || 500;
     if (status >= 500) console.error(`[${req.method} ${url.pathname}]`, err);
-    if (!res.headersSent) sendJson(res, status, { error: err.message, isSuccess: false });
+    if (!res.headersSent) sendJson(res, status, { error: err.message, code: err.code || null, isSuccess: false });
     else res.end();
   }
 });

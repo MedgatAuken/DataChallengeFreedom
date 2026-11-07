@@ -102,27 +102,114 @@
    * 2. API
    * ===================================================================== */
 
-  async function request(method, path, body) {
-    const res = await fetch(CONFIG.apiBase + path, {
-      method,
-      headers: body ? { 'content-type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    return data;
+  /** Ошибка запроса с машинно-читаемым кодом (TIMEOUT, NETWORK, BAD_RESPONSE, INVALID_JSON, API_429, …). */
+  class ApiError extends Error {
+    constructor(message, { code = null, status = 0 } = {}) {
+      super(message);
+      this.name = 'ApiError';
+      this.code = code;
+      this.status = status;
+    }
+  }
+
+  const TIMEOUT_MS = {
+    default: CONFIG.requestTimeoutMs || 20000,
+    evaluate: CONFIG.evaluateTimeoutMs || 150000, // оценка с повтором может занять > 1 мин
+    sync: CONFIG.syncTimeoutMs || 120000,
+  };
+
+  /**
+   * Запрос к локальному серверу. Никогда не возвращает «сырую» ошибку браузера:
+   * таймаут, обрыв сети, не-JSON или ошибочный статус превращаются в ApiError с кодом.
+   */
+  async function request(method, path, body, { timeout = TIMEOUT_MS.default } = {}) {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeout) : null;
+    try {
+      let res;
+      try {
+        res = await fetch(CONFIG.apiBase + path, {
+          method,
+          headers: body ? { 'content-type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined,
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          throw new ApiError(`Сервер не ответил за ${Math.round(timeout / 1000)} с`, { code: 'TIMEOUT' });
+        }
+        throw new ApiError('Нет связи с сервером', { code: 'NETWORK' });
+      }
+
+      let text = '';
+      try {
+        text = await res.text();
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          throw new ApiError(`Сервер не ответил за ${Math.round(timeout / 1000)} с`, { code: 'TIMEOUT', status: res.status });
+        }
+        throw new ApiError('Ответ сервера прерван', { code: 'BAD_RESPONSE', status: res.status });
+      }
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = null; // неполный или не-JSON ответ
+      }
+
+      if (!res.ok) {
+        throw new ApiError((data && data.error) || `HTTP ${res.status}`, { code: (data && data.code) || `HTTP_${res.status}`, status: res.status });
+      }
+      if (data === null || typeof data !== 'object') {
+        throw new ApiError('Сервер вернул неполный ответ', { code: 'BAD_RESPONSE', status: res.status });
+      }
+      return data;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   const q = (groupId) => `?group_id=${encodeURIComponent(groupId)}`;
   const api = {
-    syncDataset: (g) => request('POST', `/dataset/sync${q(g)}`),
+    syncDataset: (g) => request('POST', `/dataset/sync${q(g)}`, null, { timeout: TIMEOUT_MS.sync }),
     conversations: (g) => request('GET', `/conversations${q(g)}`),
     conversation: (g, id) => request('GET', `/conversations/${encodeURIComponent(id)}${q(g)}`),
     audioUrl: (g, id) => `${CONFIG.apiBase}/audio/${encodeURIComponent(id)}${q(g)}`,
     list: (col) => request('GET', `/store/${col}`),
     put: (col, doc) => request('PUT', `/store/${col}/${encodeURIComponent(doc.id)}`, doc),
-    evaluate: (payload) => request('POST', '/evaluate', payload),
+    evaluate: (payload) => request('POST', '/evaluate', payload, { timeout: TIMEOUT_MS.evaluate }),
   };
+
+  /* ---------- понятные сообщения об ошибках ---------- */
+
+  const NOT_CONFIDENT = 'Недостаточно данных для уверенного вывода';
+  const ERROR_TEXT = {
+    INVALID_JSON: [NOT_CONFIDENT, 'Модель вернула неполный ответ. Попробуйте повторить запрос.'],
+    RULES_VIOLATION: [NOT_CONFIDENT, 'Ответ модели не прошёл проверку по правилам чек-листа. Попробуйте повторить запрос.'],
+    MAX_TOKENS: [NOT_CONFIDENT, 'Ответ модели оказался обрезан. Попробуйте повторить запрос.'],
+    INCOMPLETE: [NOT_CONFIDENT, 'Результат оценки пришёл не полностью. Попробуйте повторить запрос.'],
+    BAD_RESPONSE: ['Сервер вернул неполный ответ', 'Попробуйте повторить запрос.'],
+    REFUSAL: ['Модель не смогла оценить диалог', 'Попробуйте повторить запрос или оцените диалог вручную.'],
+    TIMEOUT: ['Сервис не ответил вовремя', 'Попробуйте повторить запрос. Если оценка всё же завершится, она появится после обновления страницы.'],
+    API_TIMEOUT: ['Сервис оценки не ответил вовремя', 'Попробуйте повторить запрос через минуту.'],
+    NETWORK: ['Нет связи с сервером', 'Проверьте, что локальный сервер запущен: npm start в папке backend.'],
+    API_CONNECTION: ['Сервер не смог связаться с сервисом оценки', 'Проверьте интернет-соединение сервера и повторите запрос.'],
+    API_401: ['Нет доступа к сервису оценки', 'Проверьте ANTHROPIC_API_KEY в backend/.env и перезапустите сервер.'],
+    API_403: ['Нет доступа к сервису оценки', 'Ключ API не имеет прав на эту модель. Проверьте настройки ключа.'],
+    API_429: ['Сервис оценки перегружен', 'Слишком много запросов подряд. Повторите через минуту.'],
+    API_5XX: ['Сервис оценки временно недоступен', 'Повторите запрос через минуту.'],
+    HTTP_5XX: ['Сервер временно недоступен', 'Повторите запрос через минуту. Если ошибка повторяется — перезапустите сервер.'],
+  };
+
+  /** { title, message } для показа пользователю. Технические детали — в консоли. */
+  function describeError(err, fallbackTitle) {
+    const code = err && err.code;
+    const entry =
+      ERROR_TEXT[code] ||
+      (/^API_5\d\d$/.test(code || '') ? ERROR_TEXT.API_5XX : /^HTTP_5\d\d$/.test(code || '') ? ERROR_TEXT.HTTP_5XX : null);
+    if (entry) return { title: entry[0], message: entry[1], code };
+    return { title: fallbackTitle || 'Не удалось выполнить действие', message: (err && err.message) || 'Попробуйте повторить запрос.', code };
+  }
 
   /* =====================================================================
    * 3. Состояние и DOM-хелперы
@@ -137,6 +224,7 @@
     dirty: false,      // есть несохранённые изменения чек-листа
     evaluations: [],
     evaluating: new Set(), // conversation_id, по которым идёт оценка
+    evalErrors: new Map(), // conversation_id → { title, message } последней неудачной попытки
     appeals: [],
     mode: 'operator',  // 'operator' | 'reviewer' — симуляция ролей без авторизации
     ui: { appealFor: null, draft: '', decision: null }, // открытые формы в карточках результата
@@ -166,15 +254,160 @@
     return h('div', { class: 'empty' }, h('div', { class: 'empty__icon' }, icon), text);
   }
 
-  let statusTimer;
+  /** Аккуратное состояние ошибки внутри блока (вместо пустого или «сломанного» блока). */
+  function errorState(title, message, action) {
+    return h('div', { class: 'empty empty--error', role: 'alert' },
+      h('div', { class: 'empty__icon empty__icon--error', 'aria-hidden': 'true' }, '!'),
+      h('div', { class: 'empty__title' }, title),
+      message ? h('div', { class: 'small' }, message) : null,
+      action ? h('button', { class: 'btn btn--outline btn--sm', type: 'button', onclick: action.onClick }, action.label) : null
+    );
+  }
+
+  /* ---------- уведомления (toast) ---------- */
+
+  const TOAST_ICON = { success: '✓', error: '!', warning: '!', info: 'i' };
+  const TOAST_MS = { success: 4000, info: 5000, warning: 7000, error: 9000 };
+  const visibleToasts = new Map(); // ключ → элемент: одинаковое уведомление не дублируется, а «подпрыгивает»
+
+  /**
+   * toast({ type: 'success'|'error'|'warning'|'info', title, message, action: { label, onClick } })
+   * Автоматически скрывается (пауза при наведении), не больше 4 одновременно.
+   */
+  function toast({ type = 'info', title = '', message = '', action = null, duration } = {}) {
+    const stack = $('#toasts');
+    if (!stack) return;
+    const key = `${type}|${title}|${message}`;
+    const existing = visibleToasts.get(key);
+    if (existing && existing.isConnected && !existing.classList.contains('is-leaving')) {
+      // Такое же уведомление уже на экране (например, повтор не помог) — перезапускаем таймер и привлекаем внимание.
+      const bar = existing.querySelector('.toast__timer');
+      if (bar) {
+        bar.style.animation = 'none';
+        void bar.offsetWidth;
+        bar.style.animation = '';
+      }
+      existing.classList.remove('is-bump');
+      void existing.offsetWidth;
+      existing.classList.add('is-bump');
+      return;
+    }
+
+    const ms = duration || TOAST_MS[type] || 5000;
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      visibleToasts.delete(key);
+      el.classList.add('is-leaving');
+      setTimeout(() => el.remove(), 180);
+    };
+    const timerBar = h('div', { class: 'toast__timer', style: `animation-duration:${ms}ms`, 'aria-hidden': 'true' });
+    timerBar.addEventListener('animationend', close);
+
+    const el = h('div', { class: `toast toast--${type}`, role: type === 'error' || type === 'warning' ? 'alert' : 'status' },
+      h('span', { class: 'toast__icon', 'aria-hidden': 'true' }, TOAST_ICON[type] || 'i'),
+      h('div', { class: 'toast__body' },
+        title ? h('div', { class: 'toast__title' }, title) : null,
+        message ? h('div', { class: 'toast__msg' }, message) : null,
+        action
+          ? h('button', { class: 'toast__action', type: 'button', onclick: () => { close(); action.onClick(); } }, action.label)
+          : null
+      ),
+      h('button', { class: 'toast__close', type: 'button', 'aria-label': 'Закрыть уведомление', onclick: close }, '×'),
+      timerBar
+    );
+    stack.append(el);
+    visibleToasts.set(key, el);
+    while (stack.children.length > 4) stack.firstElementChild.remove();
+  }
+
+  /** Совместимость со старым API: короткое сообщение об успехе или ошибке. */
   function setStatus(text, isError) {
-    const el = $('#status');
-    clearTimeout(statusTimer);
-    if (!text) return (el.hidden = true);
-    el.textContent = text;
-    el.classList.toggle('is-error', Boolean(isError));
-    el.hidden = false;
-    statusTimer = setTimeout(() => (el.hidden = true), isError ? 8000 : 4000);
+    if (!text) return;
+    toast({ type: isError ? 'error' : 'success', message: text });
+  }
+
+  /** Уведомление об ошибке с понятным текстом по коду и, при необходимости, кнопкой «Повторить». */
+  function notifyError(err, fallbackTitle, action) {
+    console.error('[CQA]', fallbackTitle || '', err);
+    const d = describeError(err, fallbackTitle);
+    toast({ type: 'error', title: d.title, message: d.message, action });
+    return d;
+  }
+
+  /* ---------- скелетные заглушки на время загрузки ---------- */
+
+  const skel = (cls = '', style = null) => h('span', { class: `skel ${cls}`.trim(), style, 'aria-hidden': 'true' });
+
+  const Skeleton = {
+    evaluation(convId) {
+      return h('div', { class: 'skel-wrap', 'aria-busy': 'true', 'aria-label': 'Идёт оценка диалога' },
+        h('div', { class: 'skel-row' },
+          skel('skel--circle'),
+          h('div', { class: 'skel-col' }, skel('skel--line', 'width:55%'), skel('skel--line skel--sm', 'width:35%'), skel('skel--pill'))
+        ),
+        skel('skel--block', 'height:58px'),
+        h('div', { class: 'skel-col' }, skel('skel--line skel--sm', 'width:100%'), skel('skel--line skel--sm', 'width:100%'), skel('skel--line skel--sm', 'width:100%')),
+        ...[78, 64, 86, 70].map((w) =>
+          h('div', { class: 'skel-card' },
+            h('div', { class: 'skel-row skel-row--between' }, skel('skel--line', `width:${w / 2}%`), skel('skel--pill')),
+            skel('skel--line skel--sm', `width:${w}%`),
+            skel('skel--line skel--sm', `width:${w - 18}%`))
+        ),
+        h('div', { class: 'skel-caption' },
+          'Модель анализирует диалог по чек-листу · ',
+          h('span', { 'data-elapsed-for': convId }, elapsedText(convId)),
+          ' · обычно 20–40 с')
+      );
+    },
+    transcript() {
+      return h('div', { class: 'skel-wrap skel-chat', 'aria-busy': 'true', 'aria-label': 'Загрузка диалога' },
+        ...[['l', 62], ['l', 48], ['r', 70], ['l', 40], ['r', 56], ['l', 66]].map(([side, w]) =>
+          h('div', { class: `skel-bubble skel-bubble--${side}`, style: `width:${w}%` },
+            skel('skel--line skel--xs', 'width:35%'), skel('skel--line skel--sm', 'width:100%'), skel('skel--line skel--sm', 'width:72%')))
+      );
+    },
+    kpis() {
+      return [0, 1, 2].map(() =>
+        h('div', { class: 'kpi kpi--skeleton', 'aria-hidden': 'true' },
+          skel('skel--line skel--xs', 'width:55%'), skel('skel--line skel--lg', 'width:40%'), skel('skel--line skel--xs', 'width:80%')));
+    },
+    criteria() {
+      return h('div', { class: 'skel-wrap', 'aria-busy': 'true', 'aria-label': 'Загрузка чек-листа' },
+        ...[0, 1, 2, 3, 4].map(() =>
+          h('div', { class: 'skel-card' },
+            h('div', { class: 'skel-row' }, skel('skel--square'), skel('skel--line', 'width:60%')),
+            h('div', { class: 'skel-row skel-row--indent' }, skel('skel--pill'), skel('skel--pill'), skel('skel--pill skel--wide')))));
+    },
+    rows(n = 3) {
+      return h('div', { class: 'skel-wrap', 'aria-busy': 'true' },
+        ...Array.from({ length: n }, () =>
+          h('div', { class: 'skel-card' }, skel('skel--line', 'width:40%'), skel('skel--line skel--sm', 'width:85%'), skel('skel--line skel--xs', 'width:25%'))));
+    },
+  };
+
+  /* ---------- таймер ожидания оценки ---------- */
+
+  const evalStartedAt = new Map();
+  let elapsedTicker = null;
+
+  function elapsedText(convId) {
+    const t = evalStartedAt.get(convId);
+    return t ? `${Math.max(0, Math.round((Date.now() - t) / 1000))} с` : '0 с';
+  }
+
+  function tickElapsed() {
+    $$('[data-elapsed-for]').forEach((el) => (el.textContent = elapsedText(el.dataset.elapsedFor)));
+    const rec = state.current;
+    if (rec && state.evaluating.has(rec.conversation_id)) {
+      const label = $('#eval-btn .btn__label');
+      if (label) label.textContent = `Оцениваем… ${elapsedText(rec.conversation_id)}`;
+    }
+    if (!state.evaluating.size) {
+      clearInterval(elapsedTicker);
+      elapsedTicker = null;
+    }
   }
 
   const SPEAKER = { client: 'Клиент', operator: 'Оператор', bot: 'Бот', system: 'Система' };
@@ -214,14 +447,19 @@
    * ===================================================================== */
 
   async function loadConversations() {
+    const select = $('#conv-select');
+    select.replaceChildren(h('option', { value: '', disabled: true, selected: true }, 'Загрузка диалогов…'));
+    select.disabled = true;
     try {
       const data = await api.conversations(state.groupId);
-      state.list = data.records;
-      renderConvSelect();
+      if (!Array.isArray(data.records)) throw new ApiError('Список диалогов пришёл не полностью', { code: 'BAD_RESPONSE' });
+      state.list = data.records.filter((r) => r && typeof r.conversation_id === 'string');
     } catch (err) {
       state.list = [];
+      notifyError(err, `Не удалось загрузить набор ${state.groupId}`, { label: 'Повторить', onClick: loadConversations });
+    } finally {
+      select.disabled = false;
       renderConvSelect();
-      setStatus(err.message, true);
     }
   }
 
@@ -264,15 +502,152 @@
     $('#conv-count').textContent = state.list.length
       ? `Показано ${items.length} из ${state.list.length} · оценено ${evaluated}`
       : '';
+    renderDashboard();
+  }
+
+  /* =====================================================================
+   * 5a. Мини-дашборд руководителя
+   *     Считается по оценённым диалогам текущего набора и чек-листа,
+   *     с учётом решений проверяющего (финальные ответы).
+   * ===================================================================== */
+
+  function computeDashboard() {
+    const cl = state.checklist;
+    if (!cl) return null;
+    const scores = state.list
+      .map((c) => {
+        const ev = evaluationFor(c.conversation_id);
+        return ev ? { id: c.conversation_id, score: computeScore(cl, finalAnswers(ev)) } : null;
+      })
+      .filter(Boolean);
+
+    const totals = scores.map((s) => s.score.total).filter((t) => typeof t === 'number');
+    const avg = totals.length ? roundTo(totals.reduce((a, b) => a + b, 0) / totals.length, 2) : null;
+    const critical = scores.filter((s) => s.score.has_critical).map((s) => s.id);
+
+    // Потерянные баллы по критерию: эффективный вес (после перераспределения N/A) минус набранные баллы.
+    const loss = {};
+    for (const { score } of scores) {
+      for (const r of score.rows) {
+        if (r.kind !== 'scored') continue;
+        const lost = r.effective_weight - r.points;
+        const acc = (loss[r.id] = loss[r.id] || { lost: 0, dialogs: 0, applicable: 0 });
+        acc.applicable += 1;
+        if (lost > 0.005) {
+          acc.lost += lost;
+          acc.dialogs += 1;
+        }
+      }
+    }
+    const ranked = Object.entries(loss)
+      .filter(([, v]) => v.lost > 0)
+      .sort(([, a], [, b]) => b.lost - a.lost || b.dialogs - a.dialogs);
+    const top = ranked.length
+      ? (() => {
+          const [id, v] = ranked[0];
+          const c = cl.criteria.find((x) => x.id === id);
+          return { id, title: c ? c.title : id, avgLost: roundTo(v.lost / scores.length, 2), dialogs: v.dialogs, applicable: v.applicable };
+        })()
+      : null;
+
+    return {
+      evaluated: scores.length,
+      total: state.list.length,
+      avg,
+      min: totals.length ? Math.min(...totals) : null,
+      max: totals.length ? Math.max(...totals) : null,
+      critical,
+      top,
+      runnerUp: ranked[1] ? (cl.criteria.find((x) => x.id === ranked[1][0]) || {}).title : null,
+    };
+  }
+
+  function renderDashboard() {
+    const bar = $('#kpi-bar');
+    const d = computeDashboard();
+    if (!d || !d.evaluated) {
+      return bar.replaceChildren(
+        h('div', { class: 'kpi kpi--empty' },
+          h('span', { class: 'kpi__icon', 'aria-hidden': 'true' }, '📊'),
+          h('div', null,
+            h('div', { class: 'kpi__label' }, 'Аналитика по операторам'),
+            h('div', { class: 'kpi__sub' }, 'Оцените первый диалог — здесь появятся средний балл, грубые ошибки и слабое место команды.')))
+      );
+    }
+
+    const tone = d.avg == null ? '' : d.avg < 60 ? ' kpi__fill--low' : d.avg < 85 ? ' kpi__fill--mid' : '';
+    const avgTile = h('div', { class: 'kpi' },
+      h('div', { class: 'kpi__label' }, 'Средний балл операторов'),
+      h('div', { class: 'kpi__value' }, d.avg == null ? '—' : d.avg, h('span', { class: 'kpi__unit' }, ' / 100')),
+      h('div', { class: 'kpi__track', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(d.avg ?? 0) },
+        h('div', { class: `kpi__fill${tone}`, style: `width:${d.avg ?? 0}%` })),
+      h('div', { class: 'kpi__sub' },
+        `по ${d.evaluated} из ${d.total} диалогов`, d.min != null && d.evaluated > 1 ? ` · мин ${d.min} · макс ${d.max}` : '')
+    );
+
+    const hasCritical = d.critical.length > 0;
+    const critTile = h(hasCritical ? 'button' : 'div', {
+      class: `kpi${hasCritical ? ' kpi--danger' : ' kpi--ok'}`,
+      type: hasCritical ? 'button' : null,
+      title: hasCritical ? `Диалоги с грубыми ошибками: ${d.critical.join(', ')}. Нажмите, чтобы открыть.` : null,
+      onclick: hasCritical
+        ? () => {
+            const i = d.critical.indexOf(state.current && state.current.conversation_id);
+            const next = d.critical[(i + 1) % d.critical.length];
+            location.hash = `#/conversations/${encodeURIComponent(next)}`;
+          }
+        : null,
+    },
+      h('div', { class: 'kpi__label' }, 'Выявлено грубых ошибок'),
+      h('div', { class: 'kpi__value' }, hasCritical ? h('span', { class: 'kpi__badge' }, d.critical.length) : '0'),
+      h('div', { class: 'kpi__sub' }, hasCritical
+        ? `в ${d.critical.length} из ${d.evaluated} диалогов · открыть →`
+        : 'оскорблений, услуг в обход компании и утечек данных нет')
+    );
+
+    const topTile = h('div', { class: 'kpi' },
+      h('div', { class: 'kpi__label' }, 'Чаще всего теряют баллы'),
+      d.top
+        ? [
+            h('div', { class: 'kpi__value kpi__value--text', title: d.top.title }, d.top.title),
+            h('div', { class: 'kpi__sub' },
+              `−${d.top.avgLost} б. на диалог · не выполнено в ${d.top.dialogs} из ${d.top.applicable}`,
+              d.runnerUp ? ` · далее: ${d.runnerUp}` : ''),
+          ]
+        : [h('div', { class: 'kpi__value kpi__value--text' }, 'Потерь нет'), h('div', { class: 'kpi__sub' }, 'все применимые критерии выполнены')]
+    );
+
+    bar.replaceChildren(avgTile, critTile, topTile);
   }
 
   async function openConversation(id) {
+    // Скелет показываем, только если загрузка заметна (> 150 мс), чтобы не мигать на быстром ответе.
+    const skeletonTimer = setTimeout(() => {
+      $('#conv-card').replaceChildren(Skeleton.transcript());
+      if (!state.current || state.current.conversation_id !== id) $('#eval-panel').replaceChildren(Skeleton.rows(4));
+    }, 150);
     try {
-      state.current = await api.conversation(state.groupId, id);
+      const rec = await api.conversation(state.groupId, id);
+      if (!rec || !Array.isArray(rec.transcript)) throw new ApiError('Диалог пришёл не полностью', { code: 'BAD_RESPONSE' });
+      state.current = rec;
     } catch (err) {
-      setStatus(err.message, true);
+      clearTimeout(skeletonTimer);
+      const retry = { label: 'Повторить', onClick: () => openConversation(id).then(() => {
+        if (state.current && state.current.conversation_id === id) history.replaceState(null, '', `#/conversations/${encodeURIComponent(id)}`);
+      }) };
+      const d = notifyError(err, `Не удалось открыть диалог ${id}`, retry);
+      if (state.current && state.current.conversation_id !== id) {
+        // Остаёмся на открытом диалоге: возвращаем его отображение и адрес, чтобы шапка и транскрипт совпадали.
+        history.replaceState(null, '', `#/conversations/${encodeURIComponent(state.current.conversation_id)}`);
+        renderConvSelect();
+        renderTranscript();
+        renderEvalPanel();
+      } else if (!state.current) {
+        $('#conv-card').replaceChildren(errorState(d.title, d.message, retry));
+      }
       return;
     }
+    clearTimeout(skeletonTimer);
     renderConvSelect();
     renderConvMeta();
     renderTranscript();
@@ -371,9 +746,10 @@
     const busy = Boolean(rec && state.evaluating.has(rec.conversation_id));
     const ev = rec && evaluationFor(rec.conversation_id);
     btn.disabled = !rec || busy;
-    btn.classList.toggle('is-loading', busy);
+    btn.classList.toggle('is-busy', busy);
+    btn.setAttribute('aria-busy', String(busy));
     $('.btn__label', btn).textContent = busy
-      ? 'Оцениваем… ~20–40 с'
+      ? `Оцениваем… ${elapsedText(rec.conversation_id)}`
       : ev ? 'Переоценить оператора' : 'Оценить оператора';
   }
 
@@ -429,14 +805,27 @@
     const cl = state.checklist;
     if (!rec || !cl) return;
 
+    // Идёт оценка — скелет результата вместо спиннера.
+    if (state.evaluating.has(rec.conversation_id)) {
+      return panel.replaceChildren(Skeleton.evaluation(rec.conversation_id));
+    }
+
     const ev = evaluationFor(rec.conversation_id);
+    const lastError = state.evalErrors.get(rec.conversation_id);
+    const retry = { label: 'Повторить оценку', onClick: () => runEvaluation(rec.conversation_id) };
+
     if (!ev) {
       return panel.replaceChildren(
-        emptyState('📋', [
-          h('div', null, `Диалог ещё не оценён по чек-листу «${cl.name}».`),
-          h('div', { class: 'small' }, 'Нажмите «Оценить оператора» — модель проставит ответы, баллы и реплики-доказательства.'),
-        ])
+        lastError
+          ? errorState(lastError.title, lastError.message, retry)
+          : emptyState('📋', [
+              h('div', null, `Диалог ещё не оценён по чек-листу «${cl.name}».`),
+              h('div', { class: 'small' }, 'Нажмите «Оценить оператора» — модель проставит ответы, баллы и реплики-доказательства.'),
+            ])
       );
+    }
+    if (!ev.answers || typeof ev.answers !== 'object') {
+      return panel.replaceChildren(errorState(NOT_CONFIDENT, 'Сохранённая оценка неполная. Повторите оценку диалога.', retry));
     }
 
     const keepScroll = panel.scrollTop;
@@ -481,7 +870,7 @@
     );
 
     const summary = ev.summary ? h('p', { class: 'eval-summary' }, ev.summary) : null;
-    const meta = ev.cost
+    const meta = ev.cost && typeof ev.cost.usd === 'number'
       ? h('div', { class: 'eval-meta' },
           `${ev.model} · $${ev.cost.usd.toFixed(4)} · ${ev.duration_sec} с · токены: вход ${ev.cost.input_tokens + ev.cost.cache_write_tokens + ev.cost.cache_read_tokens}, выход ${ev.cost.output_tokens}`,
           ev.updated_at ? ` · ${new Date(ev.updated_at).toLocaleString()}` : '')
@@ -506,7 +895,16 @@
       );
     });
 
-    panel.replaceChildren(head, summary || '', meta || '', sectionBars, ...sections.filter(Boolean));
+    // Повторная оценка не удалась — показываем предыдущий результат и предупреждение над ним.
+    const notice = lastError
+      ? h('div', { class: 'inline-alert', role: 'alert' },
+          h('div', null,
+            h('strong', null, `${lastError.title}. `),
+            'Показан предыдущий результат оценки.'),
+          h('button', { class: 'btn btn--outline btn--sm', type: 'button', onclick: retry.onClick }, 'Повторить'))
+      : null;
+
+    panel.replaceChildren(...[notice, head, summary, meta, sectionBars, ...sections].filter(Boolean));
     panel.scrollTop = keepScroll;
   }
 
@@ -744,26 +1142,51 @@
     return `Итог: ${before ?? '—'} → ${after ?? '—'}${value === NA ? ' (вес критерия будет перераспределён)' : ''}`;
   }
 
-  async function runEvaluation() {
-    const rec = state.current;
-    if (!rec) return;
+  /** Проверка, что сервер вернул полную оценку: есть id и ответ по каждому критерию чек-листа. */
+  function assertEvaluation(ev, checklist) {
+    const complete =
+      ev && typeof ev === 'object' && typeof ev.id === 'string' &&
+      ev.answers && typeof ev.answers === 'object' &&
+      checklist.criteria.every((c) => ev.answers[c.id] && 'value' in ev.answers[c.id]);
+    if (!complete) throw new ApiError('Сервер вернул неполный результат оценки', { code: 'INCOMPLETE' });
+    return ev;
+  }
+
+  /** Оценка диалога (по умолчанию — открытого). Ошибки не ломают интерфейс: тост + состояние в панели. */
+  async function runEvaluation(convIdArg) {
+    const convId = typeof convIdArg === 'string' ? convIdArg : state.current && state.current.conversation_id;
+    if (!convId || state.evaluating.has(convId)) return; // защита от двойного клика
+    if (!state.checklist) return setStatus('Чек-лист не загружен — обновите страницу', true);
+    if (!state.current || state.current.conversation_id !== convId) {
+      location.hash = `#/conversations/${encodeURIComponent(convId)}`;
+      await openConversation(convId);
+      if (!state.current || state.current.conversation_id !== convId) return;
+    }
     // Оценка выполняется по сохранённой версии — несохранённые правки сначала сохраняем.
     if (state.dirty && !(await saveChecklist())) return;
 
-    const convId = rec.conversation_id;
+    const checklist = state.checklist;
     state.evaluating.add(convId);
-    renderEvalButton();
-    $('#eval-panel').replaceChildren(emptyState('⏳', 'Модель анализирует диалог по чек-листу…'));
+    state.evalErrors.delete(convId);
+    evalStartedAt.set(convId, Date.now());
+    if (!elapsedTicker) elapsedTicker = setInterval(tickElapsed, 1000);
+    renderEvalPanel();
     try {
-      const ev = await api.evaluate({ group_id: state.groupId, conversation_id: convId, checklist_id: state.checklist.id });
+      const ev = assertEvaluation(
+        await api.evaluate({ group_id: state.groupId, conversation_id: convId, checklist_id: checklist.id }),
+        checklist
+      );
       const i = state.evaluations.findIndex((e) => e.id === ev.id);
       if (i >= 0) state.evaluations[i] = ev;
       else state.evaluations.push(ev);
-      setStatus(`${convId}: ${ev.total ?? '—'} / 100 · $${ev.cost.usd.toFixed(4)}`);
+      const cost = ev.cost && typeof ev.cost.usd === 'number' ? ` · $${ev.cost.usd.toFixed(4)}` : '';
+      toast({ type: 'success', title: `Оценка готова: ${convId}`, message: `Итог ${ev.total ?? '—'} / 100${cost}` });
     } catch (err) {
-      setStatus(err.message, true);
+      const d = notifyError(err, 'Оценка не выполнена', { label: 'Повторить', onClick: () => runEvaluation(convId) });
+      state.evalErrors.set(convId, d);
     } finally {
       state.evaluating.delete(convId);
+      evalStartedAt.delete(convId);
       renderConvSelect();
       if (state.current && state.current.conversation_id === convId) renderEvalPanel();
       else renderEvalButton();
@@ -829,7 +1252,7 @@
       renderEvalPanel();
       setStatus(`Апелляция по критерию «${c.title}» сохранена. Переключитесь в режим «Проверяющий», чтобы рассмотреть её.`);
     } catch (err) {
-      setStatus(err.message, true);
+      notifyError(err, 'Апелляция не сохранена');
     }
   }
 
@@ -872,7 +1295,7 @@
           : `Оценка по «${c.title}» изменена. Итог пересчитан: ${totalBefore ?? '—'} → ${totalAfter ?? '—'}`
       );
     } catch (err) {
-      setStatus(err.message, true);
+      notifyError(err, 'Решение не сохранено');
     }
   }
 
@@ -903,13 +1326,18 @@
   /* ---------- экран «Апелляции» (сводный список) ---------- */
 
   async function renderAppeals() {
+    const box = $('#appeals-list');
+    if (!box.children.length || box.querySelector('.empty')) box.replaceChildren(Skeleton.rows(3));
     try {
-      state.appeals = await api.list('appeals');
+      const list = await api.list('appeals');
+      state.appeals = Array.isArray(list) ? list.filter((a) => a && a.id) : [];
       updateAppealsCount();
     } catch (err) {
-      setStatus(err.message, true);
+      const d = notifyError(err, 'Не удалось загрузить апелляции');
+      if (!state.appeals.length) {
+        return box.replaceChildren(errorState(d.title, d.message, { label: 'Повторить', onClick: renderAppeals }));
+      }
     }
-    const box = $('#appeals-list');
     if (!state.appeals.length) {
       return box.replaceChildren(emptyState('⚖️', 'Апелляций пока нет. Оспорить оценку можно в карточке критерия.'));
     }
@@ -1085,13 +1513,18 @@
       setStatus(`Чек-лист «${saved.name}» v${saved.version} сохранён`);
       return true;
     } catch (err) {
-      setStatus(err.message, true);
+      notifyError(err, 'Чек-лист не сохранён');
       return false;
     }
   }
 
   function bindChecklistToolbar() {
-    $('#cl-select').addEventListener('change', (e) => {
+    // Без загруженного чек-листа (сервер был недоступен при старте) кнопки ничего не ломают.
+    const needChecklist = (fn) => (...args) => {
+      if (!state.checklist) return toast({ type: 'warning', title: 'Чек-лист не загружен', message: 'Проверьте, что сервер запущен, и обновите страницу.' });
+      return fn(...args);
+    };
+    $('#cl-select').addEventListener('change', needChecklist((e) => {
       if (state.dirty && !root.confirm('Есть несохранённые изменения. Переключить чек-лист без сохранения?')) {
         e.target.value = state.checklist.id;
         return;
@@ -1101,12 +1534,12 @@
       renderChecklistEditor();
       renderConvSelect();
       renderEvalPanel();
-    });
-    $('#cl-name').addEventListener('input', (e) => {
+    }));
+    $('#cl-name').addEventListener('input', needChecklist((e) => {
       state.checklist.name = e.target.value;
       setDirty(true);
-    });
-    $('#cl-add').addEventListener('click', () => {
+    }));
+    $('#cl-add').addEventListener('click', needChecklist(() => {
       const cl = state.checklist;
       let n = cl.criteria.length + 1;
       while (cl.criteria.some((c) => c.id === `c${String(n).padStart(2, '0')}`)) n++;
@@ -1127,8 +1560,8 @@
       const last = cards.find((n) => $('.crit__title', n).value === 'Новый критерий') || cards[cards.length - 1];
       last.scrollIntoView({ behavior: 'smooth', block: 'center' });
       $('.crit__title', last).select();
-    });
-    $('#cl-copy').addEventListener('click', async () => {
+    }));
+    $('#cl-copy').addEventListener('click', needChecklist(async () => {
       const base = state.checklist;
       const version = Math.max(...state.checklists.map((c) => c.version || 1)) + 1;
       const copy = structuredClone(base);
@@ -1138,8 +1571,8 @@
       delete copy.updated_at;
       state.checklist = copy;
       await saveChecklist();
-    });
-    $('#cl-save').addEventListener('click', saveChecklist);
+    }));
+    $('#cl-save').addEventListener('click', needChecklist(saveChecklist));
   }
 
   /* =====================================================================
@@ -1155,7 +1588,7 @@
       setStatus(`Скачано ${r.saved} из ${r.total_records} диалогов`);
       await loadConversations();
     } catch (err) {
-      setStatus(err.message, true);
+      notifyError(err, 'Не удалось обновить набор из API');
     } finally {
       btn.disabled = false;
     }
@@ -1184,18 +1617,25 @@
       if (state.dirty) e.preventDefault();
     });
 
+    // Пока данные грузятся — скелеты вместо пустых блоков.
+    $('#cl-criteria').replaceChildren(Skeleton.criteria());
+    $('#kpi-bar').replaceChildren(...Skeleton.kpis());
+
     try {
       const [checklists, evaluations, appeals] = await Promise.all([
         api.list('checklists'), api.list('evaluations'), api.list('appeals'),
       ]);
-      state.checklists = checklists;
-      state.evaluations = evaluations;
-      state.appeals = appeals;
-      state.checklist = structuredClone(checklists[checklists.length - 1]);
+      // Повреждённые записи отбрасываем, а не роняем интерфейс.
+      state.checklists = Array.isArray(checklists) ? checklists.filter((c) => c && Array.isArray(c.criteria)) : [];
+      state.evaluations = Array.isArray(evaluations) ? evaluations.filter((e) => e && e.id && e.conversation_id) : [];
+      state.appeals = Array.isArray(appeals) ? appeals.filter((a) => a && a.id) : [];
+      if (!state.checklists.length) throw new ApiError('Чек-лист не найден на сервере', { code: 'BAD_RESPONSE' });
+      state.checklist = structuredClone(state.checklists[state.checklists.length - 1]);
       renderChecklistEditor();
       updateAppealsCount();
     } catch (err) {
-      setStatus(`Сервер недоступен: ${err.message}`, true);
+      const d = notifyError(err, 'Не удалось загрузить данные');
+      $('#cl-criteria').replaceChildren(errorState(d.title, d.message, { label: 'Обновить страницу', onClick: () => location.reload() }));
     }
 
     let savedMode = 'operator';
@@ -1212,8 +1652,67 @@
     else onRoute();
   }
 
+  /* =====================================================================
+   * 11. Защита от «белого экрана»
+   *     Ошибка в отрисовке одного блока показывает аккуратное состояние ошибки в этом блоке
+   *     и уведомление, но не ломает остальной интерфейс.
+   * ===================================================================== */
+
+  function guard(label, fn, fallback) {
+    const onError = (err) => {
+      console.error(`[CQA] Ошибка отрисовки: ${label}`, err);
+      try {
+        if (fallback) fallback(err);
+      } catch (e) {
+        console.error('[CQA] Ошибка в обработчике ошибки', e);
+      }
+      toast({
+        type: 'error',
+        title: `Не удалось показать ${label}`,
+        message: 'Данные неполные или повреждены. Обновите страницу или повторите действие.',
+      });
+    };
+    return function guarded(...args) {
+      try {
+        const result = fn.apply(this, args);
+        return result && typeof result.then === 'function' ? result.catch(onError) : result;
+      } catch (err) {
+        return onError(err);
+      }
+    };
+  }
+
+  const retryCurrent = () => state.current && runEvaluation(state.current.conversation_id);
+  renderEvalPanel = guard('результат оценки', renderEvalPanel, () =>
+    $('#eval-panel').replaceChildren(errorState(NOT_CONFIDENT, 'Результат оценки неполный. Попробуйте повторить запрос.', { label: 'Повторить оценку', onClick: retryCurrent })));
+  renderTranscript = guard('транскрипт', renderTranscript, () =>
+    $('#conv-card').replaceChildren(errorState('Транскрипт не удалось показать', 'Данные диалога неполные. Выберите диалог ещё раз.')));
+  renderConvMeta = guard('карточку диалога', renderConvMeta, () => $('#conv-meta').replaceChildren());
+  renderConvSelect = guard('список диалогов', renderConvSelect);
+  renderDashboard = guard('аналитику', renderDashboard, () =>
+    $('#kpi-bar').replaceChildren(h('div', { class: 'kpi kpi--empty' }, h('div', { class: 'kpi__sub' }, 'Аналитика временно недоступна.'))));
+  renderChecklistEditor = guard('чек-лист', renderChecklistEditor, () =>
+    $('#cl-criteria').replaceChildren(errorState('Чек-лист не удалось показать', 'Обновите страницу.', { label: 'Обновить', onClick: () => location.reload() })));
+  renderAppeals = guard('апелляции', renderAppeals, () =>
+    $('#appeals-list').replaceChildren(errorState('Апелляции не удалось показать', 'Обновите страницу.')));
+  onRoute = guard('страницу', onRoute);
+
+  // Последний рубеж: любая непойманная ошибка — уведомление, а не тихо сломанная страница.
+  if (typeof root.addEventListener === 'function' && typeof document !== 'undefined') {
+    root.addEventListener('error', (e) => {
+      if (!e.error) return; // ошибки загрузки ресурсов (аудио и т. п.) обрабатываются на месте
+      console.error('[CQA] Непредвиденная ошибка', e.error);
+      toast({ type: 'error', title: 'Непредвиденная ошибка интерфейса', message: 'Действие не выполнено, данные не потеряны. Попробуйте ещё раз.' });
+    });
+    root.addEventListener('unhandledrejection', (e) => {
+      console.error('[CQA] Необработанная ошибка', e.reason);
+      const d = describeError(e.reason, 'Действие не выполнено');
+      toast({ type: 'error', title: d.title, message: d.message });
+    });
+  }
+
   // Публичное API модуля (удобно для отладки в консоли и будущей интеграции).
-  root.CQA = { config: CONFIG, state, api, computeScore, finalAnswers, NA };
+  root.CQA = { config: CONFIG, state, api, computeScore, finalAnswers, computeDashboard, toast, NA };
 
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

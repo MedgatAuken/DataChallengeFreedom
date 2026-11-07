@@ -111,6 +111,9 @@
           <span id="conv-count" class="zone__hint"></span>
         </div>
 
+        <!-- Мини-дашборд руководителя: пересчитывается по мере оценки диалогов -->
+        <section id="kpi-bar" class="kpi-bar" aria-label="Аналитика по проверенным диалогам" aria-live="polite"></section>
+
         <div class="analysis-bar">
           <div class="field field--grow">
             <label class="field__label" for="conv-select">Диалог</label>
@@ -188,7 +191,8 @@
       </section>
     </main>
 
-    <div id="status" class="toast" role="status" aria-live="polite" hidden></div>
+    <!-- Стек уведомлений (toast) -->
+    <div id="toasts" class="toast-stack" aria-live="polite" aria-relevant="additions"></div>
   </div>
 
   <!-- Карточка критерия в левой зоне -->

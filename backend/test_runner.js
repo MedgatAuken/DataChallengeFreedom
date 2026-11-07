@@ -175,6 +175,21 @@ function classify(err) {
   return 'EXCEPTION';
 }
 
+/* ---------- стиль обоснований ---------- */
+
+// Эвристика: эмоциональная и оценочная лексика, запрещённая правилами стиля в промпте.
+const EMOTIONAL = /(^|[^а-яё])(отличн|образцов|прекрасн|блестящ|великолепн|замечательн|к сожалению|увы|молод(ец|цом)|ужасн|безупречн|идеальн|грубо проигнорир)|!/i;
+
+function styleIssues(ev) {
+  const texts = [
+    ...ev.оценка_llm.критерии.map((x) => ({ where: x.id, text: x.обоснование })),
+    { where: 'резюме', text: ev.оценка_llm.резюме },
+  ];
+  return texts
+    .filter((t) => EMOTIONAL.test(t.text || ''))
+    .map((t) => ({ where: t.where, match: (t.text.match(EMOTIONAL) || [''])[0].trim(), text: t.text }));
+}
+
 const ERROR_HINT = {
   INVALID_JSON: 'модель вернула невалидный JSON (после повтора)',
   RULES_VIOLATION: 'ответ нарушает правила чек-листа (после повтора)',
@@ -234,6 +249,10 @@ for (const [i, rec] of selected.entries()) {
       seconds: ev.время_сек,
       cost: ev.стоимость,
       checks,
+      style: styleIssues(ev),
+      // Ответы и обоснования — в отчёт, чтобы их можно было прочитать и сравнить между прогонами.
+      answers: ev.оценка_llm.критерии.map((x) => ({ id: x.id, оценка: x.оценка, обоснование: x.обоснование })),
+      summary: ev.оценка_llm.резюме,
     });
   } catch (err) {
     const usage = err.details?.usage;
@@ -300,6 +319,13 @@ console.log(`  ${parseIssues.length ? WARN : OK} невалидный JSON от 
 console.log(`  ${ruleIssues.length ? WARN : OK} нарушения правил в ответе модели: ${ruleIssues.length}`);
 for (const x of ruleIssues) for (const e of x.errors) console.log(`      ${c.gray(x.id)} ${e}`);
 console.log(`  ${retried.length ? WARN : OK} оценок с повторной попыткой: ${retried.length}`);
+
+console.log();
+console.log(c.bold('Стиль обоснований (эмоциональная лексика, «!»)'));
+const styleHits = results.flatMap((r) => (r.style || []).map((s) => ({ id: r.conversation_id, ...s })));
+const styleChecked = results.filter((r) => r.style).length;
+console.log(`  ${styleHits.length ? WARN : OK} замечаний: ${styleHits.length} ${c.gray(`(проверено диалогов: ${styleChecked})`)}`);
+for (const s of styleHits) console.log(`      ${c.gray(`${s.id} ${s.where}`)} «${s.match}»: ${s.text.slice(0, 90)}`);
 
 console.log();
 console.log(c.bold('Проверки расчёта итога (N/A, веса, грубые ошибки)'));
