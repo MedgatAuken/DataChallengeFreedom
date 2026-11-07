@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Локальный сервер CQA: раздаёт фронтенд и проксирует API организаторов (обход CORS).
-// Без внешних зависимостей — нужен только Node.js 18+.
+// Локальный сервер CQA: раздаёт фронтенд, проксирует API организаторов (обход CORS)
+// и запускает оценку диалогов через LLM (evaluator.js). Нужен Node.js 18+ и `npm install`.
 import { createServer } from 'node:http';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { DATA_DIR, DEFAULT_GROUP_ID, FRONTEND_DIR, PORT, STORE_DIR } from './config.js';
 import { assertGroupId, fetchDataset, loadDataset, syncDataset } from './fetch_dataset.js';
+import { evaluateConversation, loadChecklist } from './evaluator.js';
 
 // ---------- утилиты ----------
 
@@ -100,6 +101,47 @@ async function resolveAudioUrl(playerUrl) {
   const m = html.match(/<source[^>]+src="([^"]+)"/i) || html.match(/<audio[^>]+src="([^"]+)"/i);
   if (!m) throw httpError(502, 'Не удалось найти ссылку на аудио на странице плеера');
   return m[1].replace(/&amp;/g, '&');
+}
+
+// ---------- оценка ----------
+
+const evaluationsInFlight = new Map(); // ключ -> Promise, чтобы двойной клик не запускал оценку дважды
+
+// Ответ модели («Да»/«Нет»/«N/A»/балл) -> формат ответа, который использует фронтенд.
+function toAnswerValue(v) {
+  if (v === 'Да') return true;
+  if (v === 'Нет') return false;
+  if (v === 'N/A') return 'NA';
+  return v;
+}
+
+function toEvaluationDoc(ev, groupId) {
+  const answers = {};
+  for (const r of ev.итог.критерии) {
+    answers[r.id] = {
+      value: toAnswerValue(r.оценка),
+      explanation: r.обоснование,
+      quote: r.реплика_доказательство,
+      evidence: r.номера_реплик,
+      checked_range: r.проверенный_участок.length ? [r.проверенный_участок[0], r.проверенный_участок.at(-1)] : null,
+    };
+  }
+  return {
+    id: `${groupId}__${ev.conversation_id}__${ev.checklist_id}`,
+    group_id: groupId,
+    conversation_id: ev.conversation_id,
+    checklist_id: ev.checklist_id,
+    checklist_version: ev.checklist_version,
+    answers,
+    summary: ev.оценка_llm.резюме,
+    total: ev.итог.итоговый_балл,
+    has_critical: ev.итог.грубая_ошибка,
+    model: ev.модель,
+    attempts: ev.попыток,
+    duration_sec: ev.время_сек,
+    cost: ev.стоимость,
+    source: 'llm',
+  };
 }
 
 // ---------- маршруты API ----------
@@ -201,9 +243,38 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // POST /api/evaluate — место для подключения модели оценки (LLM).
-  if (parts[0] === 'evaluate') {
-    throw httpError(501, 'Сервис автоматической оценки ещё не подключён');
+  // POST /api/evaluate  { group_id, conversation_id, checklist_id }
+  // Оценивает диалог через LLM по сохранённому чек-листу и сохраняет результат в коллекцию evaluations.
+  if (parts[0] === 'evaluate' && method === 'POST') {
+    const body = await readJsonBody(req);
+    const g = assertGroupId(body.group_id || groupId);
+    const convId = String(body.conversation_id || '');
+    const ds = await getDataset(g);
+    const record = ds.records.find((r) => r.conversation_id === convId);
+    if (!record) throw httpError(404, `Диалог ${convId} не найден в наборе ${g}`);
+    const checklist = await loadChecklist(body.checklist_id);
+
+    const key = `${g}__${convId}__${checklist.id}`;
+    if (!evaluationsInFlight.has(key)) {
+      evaluationsInFlight.set(
+        key,
+        (async () => {
+          const ev = await evaluateConversation(record, checklist);
+          const doc = toEvaluationDoc(ev, g);
+          const docs = await readCollection('evaluations');
+          const now = new Date().toISOString();
+          docs[doc.id] = { ...doc, created_at: now, updated_at: now };
+          await writeCollection('evaluations', docs);
+          console.log(`[evaluate] ${key}: ${ev.итог.итоговый_балл} баллов, $${ev.стоимость.usd.toFixed(4)}, ${ev.время_сек} с`);
+          return docs[doc.id];
+        })().finally(() => evaluationsInFlight.delete(key))
+      );
+    }
+    try {
+      return sendJson(res, 200, await evaluationsInFlight.get(key));
+    } catch (err) {
+      throw httpError(err.status || 502, `Оценка не выполнена: ${err.message}`);
+    }
   }
 
   throw httpError(404, `Неизвестный маршрут: ${method} ${url.pathname}`);

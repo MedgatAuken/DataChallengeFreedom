@@ -192,7 +192,12 @@ button.msg__time {
 .eval-section__title { font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--c-brand-2); font-weight: 700; }
 .eval-crit { border: 1px solid var(--c-line); border-radius: 8px; padding: 8px 10px; margin-top: 6px; }
 .eval-crit__head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
-.eval-crit__body { font-size: 13px; color: var(--c-muted); margin-top: 4px; }
+.eval-crit__body { font-size: 13px; color: var(--c-muted); margin-top: 4px; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.eval-quote {
+  margin: 0; padding: 4px 8px; border-left: 3px solid var(--c-brand-2);
+  background: var(--c-bg); color: var(--c-ink); font-style: italic; border-radius: 0 6px 6px 0;
+}
+.eval-summary { margin: 10px 0 4px; font-size: 13px; }
 
 /* ---------- редактор чек-листа ---------- */
 .checklist-editor { max-width: 1100px; width: 100%; margin: 0 auto; }

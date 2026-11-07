@@ -10,8 +10,10 @@ frontend/              Интерфейс на чистом HTML/CSS/JS (без 
   index.html           Разметка; всё приложение внутри #cqa-app (готово к встраиванию в Dynamics 365)
   style.css            Стили, ограничены корнем .cqa
   app.js               Логика: список диалогов, карточка, расчёт балла, редактор чек-листа, апелляции
-backend/               Локальный сервер на Node.js (без зависимостей)
-  server.js            Раздаёт фронтенд и проксирует API организаторов (обход CORS)
+backend/               Локальный сервер на Node.js
+  server.js            Раздаёт фронтенд, проксирует API организаторов (обход CORS), запускает оценку
+  evaluator.js         Оценка диалога через Claude: промпт, строгий JSON, пересчёт итога, стоимость
+  test_eval.js         Тест оценки одного диалога из консоли
   fetch_dataset.js     Скрипт: GET к API организаторов → data/<group>_data.json
   config.js            Порт, пути; читает backend/.env
   .env.example         Шаблон .env с адресом API организаторов (сам .env в git не входит)
@@ -30,7 +32,8 @@ backend/               Локальный сервер на Node.js (без за
 
 ```bash
 cd backend
-cp .env.example .env   # затем отредактируйте CQA_API_URL
+cp .env.example .env   # затем укажите CQA_API_URL и ANTHROPIC_API_KEY
+npm install            # @anthropic-ai/sdk
 npm run fetch          # скачать DEV (65 диалогов) в backend/data/dev_data.json
 npm start              # сервер на http://localhost:3000
 ```
@@ -56,7 +59,7 @@ npm run fetch -- <GROUP_ID>    # → backend/data/<group_id>_data.json
 | GET | `/api/conversations/:id?group_id=DEV` | Диалог целиком |
 | GET | `/api/audio/:id?group_id=DEV` | Редирект на mp3 записи звонка (ссылка из страницы плеера, живёт ~1 ч) |
 | GET/PUT/DELETE | `/api/store/{checklists\|evaluations\|appeals}[/:id]` | JSON-хранилище |
-| POST | `/api/evaluate` | Точка подключения модели оценки (пока 501) |
+| POST | `/api/evaluate` | `{group_id, conversation_id, checklist_id}` → оценка через LLM, сохраняется в `evaluations` |
 
 ## Расчёт итога
 
@@ -65,6 +68,36 @@ npm run fetch -- <GROUP_ID>    # → backend/data/<group_id>_data.json
 веса критериев с N/A перераспределяются между применимыми (максимум 100); округление до 2 знаков;
 если применимых критериев с весом нет — итог не рассчитывается; грубые ошибки отмечаются отдельно.
 
+## Автоматическая оценка (LLM)
+
+`backend/evaluator.js` — модуль оценки на Claude (`@anthropic-ai/sdk`, модель `claude-opus-5-5`):
+
+- системный промпт собирается из конфигурации чек-листа (критерии, веса, шкалы, условия N/A),
+  поэтому изменённый через интерфейс критерий сразу попадает в оценку;
+- ответ модели — строгий JSON по схеме (structured outputs): для каждого критерия `критерий`, `оценка`
+  (Да / Нет / балл / N/A), `исходный_вес`, `обоснование`, `реплика_доказательство`, `номера_реплик`,
+  `проверенный_участок`;
+- ответ проверяется по правилам чек-листа (N/A только где разрешён, балл — ступень шкалы); при нарушении
+  — одна повторная попытка с перечнем ошибок;
+- итог пересчитывается в коде (`computeFinalScore`), а не берётся у модели; грубая ошибка — отдельный флаг;
+- `estimateCost` считает токены всех вызовов и стоимость в USD по тарифам модели.
+
+```bash
+cd backend
+npm install                       # @anthropic-ai/sdk
+# добавьте ANTHROPIC_API_KEY в backend/.env
+npm run test:eval                 # оценка p1-ru-001 из data/dev_data.json
+node test_eval.js p2-kz-003       # любой другой диалог
+```
+
+Результат сохраняется в `backend/data/eval_results/<conversation_id>.json`.
+
+В интерфейсе: откройте диалог → «Запустить оценку». Результат (ответы, обоснования, цитаты-доказательства
+со ссылками на реплики, резюме, модель и стоимость) сохраняется в `backend/data/store/evaluations.json`.
+
+Стоимость (Claude Opus 5.5, effort high): ≈ $0.07 за первый диалог и ≈ $0.05 за последующие —
+системный промпт с чек-листом кэшируется на 5 минут. Около 20 секунд на диалог.
+
 ## Переменные окружения
 
 Читаются из окружения или из `backend/.env`.
@@ -72,3 +105,6 @@ npm run fetch -- <GROUP_ID>    # → backend/data/<group_id>_data.json
 - `PORT` — порт сервера (по умолчанию 3000)
 - `CQA_API_URL` — адрес API организаторов без `group_id`
 - `CQA_GROUP_ID` — набор по умолчанию (`DEV`)
+- `ANTHROPIC_API_KEY` — ключ Anthropic API для модуля оценки
+- `CQA_MODEL` — модель оценки (по умолчанию `claude-opus-5-5`)
+- `CQA_EFFORT` — глубина рассуждений `low|medium|high|xhigh|max` (по умолчанию `high`)

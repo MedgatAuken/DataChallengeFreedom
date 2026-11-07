@@ -126,6 +126,7 @@
     checklists: [],
     checklist: null, // активный (редактируемый) чек-лист
     evaluations: [],
+    evaluating: new Set(), // conversation_id, по которым идёт оценка
     appeals: [],
   };
 
@@ -352,7 +353,9 @@
     const score = computeScore(cl, answers);
     const rowById = Object.fromEntries(score.rows.map((r) => [r.id, r]));
 
-    const runBtn = h('button', { class: 'btn btn--primary', type: 'button', onclick: runEvaluation }, ev ? 'Переоценить' : 'Запустить оценку');
+    const busy = state.evaluating.has(rec.conversation_id);
+    const runBtn = h('button', { class: 'btn btn--primary', type: 'button', onclick: runEvaluation, disabled: busy },
+      busy ? 'Оценивается… (~20–40 с)' : ev ? 'Переоценить' : 'Запустить оценку');
 
     const header = h('div', null,
       h('h3', null, cl.name, ' ', h('span', { class: 'muted small' }, `v${cl.version}`)),
@@ -362,7 +365,12 @@
         score.has_critical ? h('span', { class: 'badge badge--danger' }, 'Грубая ошибка') : null,
         ev && !score.complete ? h('span', { class: 'badge badge--warn' }, 'неполная оценка') : null
       ),
-      runBtn
+      runBtn,
+      ev && ev.summary ? h('p', { class: 'eval-summary' }, ev.summary) : null,
+      ev && ev.cost ? h('div', { class: 'small muted' },
+        `${ev.model} · $${ev.cost.usd.toFixed(4)} · ${ev.duration_sec} с · токены: вход ${ev.cost.input_tokens + ev.cost.cache_write_tokens + ev.cost.cache_read_tokens}, выход ${ev.cost.output_tokens}`,
+        ev.updated_at ? ` · ${new Date(ev.updated_at).toLocaleString()}` : '') : null,
+      ev && ev.checklist_version !== cl.version ? h('div', { class: 'badge badge--warn' }, `оценено по версии v${ev.checklist_version} — переоцените`) : null
     );
 
     const sections = cl.sections.map((s) => {
@@ -386,6 +394,7 @@
             ),
             h('div', { class: 'eval-crit__body' },
               a.explanation || (ev ? '' : c.description),
+              a.quote ? h('blockquote', { class: 'eval-quote' }, a.quote) : null,
               evidence.length ? h('div', null, 'Основание: ', ...evidence.flatMap((e, i) => (i ? [', ', e] : [e]))) : null,
               a.checked_range ? h('div', null, 'Проверенный участок: ', h('a', { href: msgLink(rec.conversation_id, a.checked_range[0]) }, `#${a.checked_range[0]}–#${a.checked_range[1]}`)) : null,
               ev && a.value !== undefined ? h('button', { class: 'btn btn--sm btn--ghost', type: 'button', onclick: () => createAppeal(ev, c) }, 'Оспорить') : null
@@ -400,11 +409,26 @@
 
   async function runEvaluation() {
     const rec = state.current;
+    const cl = state.checklist;
+    if (!state.checklists.some((c) => c.id === cl.id && c.version === cl.version)) {
+      return setStatus('Сначала сохраните чек-лист — оценка выполняется по сохранённой версии', true);
+    }
+    const convId = rec.conversation_id;
+    state.evaluating.add(convId);
+    renderEvalPanel();
+    setStatus(`Оценка ${convId} запущена…`);
     try {
-      setStatus('Оценка запущена…');
-      await api.evaluate({ group_id: state.groupId, conversation_id: rec.conversation_id, checklist_id: state.checklist.id });
+      const ev = await api.evaluate({ group_id: state.groupId, conversation_id: convId, checklist_id: cl.id });
+      const i = state.evaluations.findIndex((e) => e.id === ev.id);
+      if (i >= 0) state.evaluations[i] = ev;
+      else state.evaluations.push(ev);
+      setStatus(`${convId}: ${ev.total ?? '—'} / 100 · $${ev.cost.usd.toFixed(4)}`);
     } catch (err) {
       setStatus(err.message, true);
+    } finally {
+      state.evaluating.delete(convId);
+      renderList();
+      if (state.current && state.current.conversation_id === convId) renderEvalPanel();
     }
   }
 
