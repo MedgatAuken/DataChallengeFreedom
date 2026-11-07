@@ -34,6 +34,19 @@
         <a class="nav-link" href="#/appeals" data-view="appeals">Апелляции <span id="appeals-count" class="nav-link__count" hidden></span></a>
       </nav>
 
+      <!-- Симуляция ролей без авторизации: оператор подаёт апелляцию, проверяющий принимает решение -->
+      <div class="mode-switch" role="radiogroup" aria-label="Режим работы">
+        <span class="mode-switch__label">Режим</span>
+        <button class="mode-switch__btn" type="button" role="radio" data-mode="operator" aria-checked="true">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Оператор
+        </button>
+        <button class="mode-switch__btn" type="button" role="radio" data-mode="reviewer" aria-checked="false">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Проверяющий
+        </button>
+      </div>
+
       <div class="topbar__dataset">
         <label class="topbar__label" for="group-id">Набор</label>
         <input id="group-id" class="input input--dark" value="DEV" maxlength="64" spellcheck="false" aria-label="group_id набора">

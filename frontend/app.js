@@ -133,6 +133,8 @@
     evaluations: [],
     evaluating: new Set(), // conversation_id, по которым идёт оценка
     appeals: [],
+    mode: 'operator',  // 'operator' | 'reviewer' — симуляция ролей без авторизации
+    ui: { appealFor: null, draft: '', decision: null }, // открытые формы в карточках результата
   };
 
   const $ = (sel, ctx) => (ctx || document).querySelector(sel);
@@ -240,7 +242,7 @@
           list.map((c) => {
             const ev = evaluationFor(c.conversation_id);
             const preview = c.preview.length > 60 ? c.preview.slice(0, 60) + '…' : c.preview;
-            const mark = ev ? ` — ✓ ${ev.total ?? '—'}` : '';
+            const mark = ev ? ` — ✓ ${finalTotal(ev) ?? '—'}` : '';
             return h('option', { value: c.conversation_id, selected: c.conversation_id === currentId },
               `${c.conversation_id} · ${c.has_audio ? '🎧 ' : ''}${preview}${mark}`);
           })
@@ -344,6 +346,7 @@
     $$('.msg.is-highlight').forEach((m) => m.classList.remove('is-highlight'));
     const el = document.getElementById(`msg-${idx}`);
     if (!el) return;
+    void el.offsetWidth; // перезапуск анимации при повторном клике
     el.classList.add('is-highlight');
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
@@ -387,6 +390,31 @@
 
   const TONE_PILL = { yes: 'pill--ok', no: 'pill--bad', partial: 'pill--warn', na: '' };
 
+  /** Переход к реплике-доказательству: подсветка в окне чата (повторный клик по той же ссылке тоже работает). */
+  function goToMessage(convId, idx) {
+    const link = msgLink(convId, idx);
+    if (location.hash === link) highlightMessage(idx);
+    else location.hash = link;
+  }
+
+  /** Делает элемент кликабельным: клик/Enter ведёт к первой реплике-доказательству. */
+  function evidenceTarget(convId, evidence) {
+    if (!evidence || !evidence.length) return {};
+    const go = () => goToMessage(convId, evidence[0]);
+    return {
+      role: 'button',
+      tabindex: '0',
+      title: `Показать реплику #${evidence[0]} в чате`,
+      onclick: go,
+      onkeydown: (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          go();
+        }
+      },
+    };
+  }
+
   function renderEvalPanel() {
     renderEvalButton();
     const panel = $('#eval-panel');
@@ -404,9 +432,13 @@
       );
     }
 
-    const answers = ev.answers || {};
-    const score = computeScore(cl, answers);
+    const keepScroll = panel.scrollTop;
+    const original = computeScore(cl, ev.answers || {});
+    const score = computeScore(cl, finalAnswers(ev));
     const rowById = Object.fromEntries(score.rows.map((r) => [r.id, r]));
+    const appeals = appealsFor(ev);
+    const changedCount = appeals.filter((a) => a.status === 'changed').length;
+    const openCount = appeals.filter((a) => a.status === 'open').length;
     const pct = score.total == null ? 0 : score.total;
     const naCount = score.rows.filter((r) => r.kind === 'na').length;
 
@@ -421,14 +453,22 @@
         )
       ),
       h('div', { class: 'score-head__info' },
-        h('span', { class: 'score-head__title' }, `${cl.name} · v${ev.checklist_version}`),
+        h('span', { class: 'score-head__title' }, changedCount ? 'Финальный результат' : `${cl.name} · v${ev.checklist_version}`),
+        changedCount
+          ? h('div', { class: 'score-diff' },
+              h('span', { class: 'score-diff__old' }, `Исходная оценка ${original.total ?? '—'}`),
+              h('span', { class: 'score-diff__arrow', 'aria-hidden': 'true' }, '→'),
+              h('span', { class: 'score-diff__new' }, `после пересмотра ${score.total ?? '—'}`))
+          : null,
         h('div', { class: 'score-head__badges' },
           score.has_critical
             ? h('span', { class: 'pill pill--bad' }, '⚠ Грубая ошибка')
             : h('span', { class: 'pill pill--ok' }, 'Грубых ошибок нет'),
           naCount ? h('span', { class: 'pill' }, `N/A: ${naCount}`) : null,
+          openCount ? h('span', { class: 'pill pill--warn' }, `Апелляций на рассмотрении: ${openCount}`) : null,
+          changedCount ? h('span', { class: 'pill pill--dark' }, `Изменено проверяющим: ${changedCount}`) : null,
           !score.complete ? h('span', { class: 'pill pill--warn' }, 'Неполная оценка') : null,
-          ev.checklist_version !== cl.version ? h('span', { class: 'pill pill--warn' }, `Чек-лист изменён — переоцените`) : null
+          ev.checklist_version !== cl.version ? h('span', { class: 'pill pill--warn' }, 'Чек-лист изменён — переоцените') : null
         )
       )
     );
@@ -455,44 +495,246 @@
       if (!crit.length) return null;
       return h('div', { class: 'eval-section' },
         h('div', { class: 'eval-section__title' }, s.title),
-        crit.map((c) => {
-          const a = answers[c.id] || {};
-          const r = rowById[c.id];
-          const tone = answerTone(c, a.value);
-          const links = (a.evidence || []).map((i) => h('a', { href: msgLink(rec.conversation_id, i), title: 'Перейти к реплике' }, `#${i}`));
-          const points =
-            c.type === 'critical' ? 'без баллов'
-            : r && r.kind === 'na' ? `вес ${c.weight} перераспределён`
-            : r && r.points != null ? `${roundTo(r.points, 2)} из ${roundTo(r.effective_weight, 2)} · вес ${c.weight}`
-            : `вес ${c.weight}`;
-          return h('div', { class: `eval-crit eval-crit--${tone || 'na'}` },
-            h('div', { class: 'eval-crit__head' },
-              h('span', { class: 'eval-crit__name' }, c.title),
-              h('span', { class: 'eval-crit__score' },
-                h('span', { class: 'eval-crit__points' }, points),
-                h('span', { class: `pill ${TONE_PILL[tone] || ''}` }, answerLabel(c, a.value))
-              )
-            ),
-            h('div', { class: 'eval-crit__body' },
-              a.explanation || null,
-              a.quote ? h('blockquote', { class: 'eval-quote' }, a.quote) : null,
-              links.length || a.checked_range
-                ? h('div', { class: 'eval-links' },
-                    links.length ? ['Основание: ', ...links] : null,
-                    a.checked_range
-                      ? [' Проверенный участок: ', h('a', { href: msgLink(rec.conversation_id, a.checked_range[0]) }, `#${a.checked_range[0]}–#${a.checked_range[1]}`)]
-                      : null)
-                : null,
-              a.value !== undefined
-                ? h('button', { class: 'btn btn--outline btn--sm', type: 'button', onclick: () => createAppeal(ev, c) }, 'Оспорить')
-                : null
-            )
-          );
-        })
+        crit.map((c) => renderCriterionCard(rec, ev, c, rowById[c.id]))
       );
     });
 
     panel.replaceChildren(head, summary || '', meta || '', sectionBars, ...sections.filter(Boolean));
+    panel.scrollTop = keepScroll;
+  }
+
+  /** Карточка критерия: ответ, баллы, обоснование (кликабельно), апелляция и решение проверяющего. */
+  function renderCriterionCard(rec, ev, c, row) {
+    const orig = (ev.answers || {})[c.id] || {};
+    const appeal = appealFor(ev, c.id);
+    const changed = appeal && appeal.status === 'changed';
+    const value = changed ? appeal.decision.value : orig.value;
+    const tone = answerTone(c, value);
+    const evidence = orig.evidence || [];
+    const convId = rec.conversation_id;
+
+    const points =
+      c.type === 'critical' ? 'без баллов'
+      : row && row.kind === 'na' ? `вес ${c.weight} перераспределён`
+      : row && row.points != null ? `${roundTo(row.points, 2)} из ${roundTo(row.effective_weight, 2)} · вес ${c.weight}`
+      : `вес ${c.weight}`;
+
+    const links = evidence.map((i) =>
+      h('a', {
+        href: msgLink(convId, i),
+        title: 'Перейти к реплике',
+        onclick: (e) => {
+          e.preventDefault();
+          goToMessage(convId, i);
+        },
+      }, `#${i}`)
+    );
+
+    return h('div', { class: `eval-crit eval-crit--${tone || 'na'}${appeal ? ' eval-crit--disputed' : ''}`, 'data-criterion': c.id },
+      h('div', { class: 'eval-crit__head' },
+        h('span', { class: 'eval-crit__name' }, c.title),
+        h('span', { class: 'eval-crit__score' },
+          h('span', { class: 'eval-crit__points' }, points),
+          changed ? h('span', { class: 'pill pill--struck', title: 'Исходная оценка модели' }, answerLabel(c, orig.value)) : null,
+          h('span', { class: `pill ${TONE_PILL[tone] || ''}` }, answerLabel(c, value))
+        )
+      ),
+      h('div', { class: 'eval-crit__body' },
+        orig.explanation ? h('div', { class: 'eval-explain', ...evidenceTarget(convId, evidence) }, orig.explanation) : null,
+        orig.quote ? h('blockquote', { class: 'eval-quote', ...evidenceTarget(convId, evidence) }, orig.quote) : null,
+        links.length || orig.checked_range
+          ? h('div', { class: 'eval-links' },
+              links.length ? ['Основание: ', ...links] : null,
+              orig.checked_range
+                ? [' Проверенный участок: ', h('a', {
+                    href: msgLink(convId, orig.checked_range[0]),
+                    onclick: (e) => {
+                      e.preventDefault();
+                      goToMessage(convId, orig.checked_range[0]);
+                    },
+                  }, `#${orig.checked_range[0]}–#${orig.checked_range[1]}`)]
+                : null)
+          : null,
+        orig.value !== undefined ? renderAppealArea(rec, ev, c, appeal) : null
+      )
+    );
+  }
+
+  /* ---------- апелляция и решение внутри карточки ---------- */
+
+  const APPEAL_STATUS = {
+    open: ['На рассмотрении', 'pill--warn'],
+    confirmed: ['Оценка подтверждена', 'pill--ok'],
+    changed: ['Оценка изменена', 'pill--dark'],
+  };
+
+  function renderAppealArea(rec, ev, c, appeal) {
+    const reviewer = state.mode === 'reviewer';
+
+    // Нет апелляции: оператор может оспорить, проверяющему здесь делать нечего.
+    if (!appeal) {
+      if (reviewer) return null;
+      if (state.ui.appealFor !== c.id) {
+        return h('button', {
+          class: 'btn btn--outline btn--sm',
+          type: 'button',
+          onclick: () => {
+            state.ui.appealFor = c.id;
+            state.ui.draft = '';
+            renderEvalPanel();
+            focusField(`[data-criterion="${c.id}"] textarea`);
+          },
+        }, 'Оспорить');
+      }
+      const textarea = h('textarea', {
+        class: 'input', rows: '3', placeholder: 'Почему вы не согласны с оценкой? Сошлитесь на реплики, например #9.',
+        oninput: (e) => (state.ui.draft = e.target.value),
+      });
+      textarea.value = state.ui.draft || '';
+      return h('div', { class: 'inline-form' },
+        h('label', { class: 'inline-form__label' }, `Апелляция по критерию «${c.title}»`),
+        textarea,
+        h('div', { class: 'inline-form__actions' },
+          h('button', { class: 'btn btn--dark btn--sm', type: 'button', onclick: () => submitAppeal(ev, c, textarea.value) }, 'Сохранить апелляцию'),
+          h('button', { class: 'btn btn--text btn--sm', type: 'button', onclick: () => closeForms() }, 'Отмена')
+        )
+      );
+    }
+
+    // Есть апелляция: проверяющий видит спорную оценку, комментарий и фрагмент диалога.
+    const [label, cls] = APPEAL_STATUS[appeal.status] || [appeal.status, ''];
+    const origValue = appeal.original_answer ? appeal.original_answer.value : undefined;
+    const fragment = (appeal.original_answer?.evidence || [])
+      .slice(0, 3)
+      .map((i) => rec.transcript[i] && h('div', { class: 'fragment__msg', ...evidenceTarget(rec.conversation_id, [i]) },
+        h('span', { class: 'fragment__who' }, `#${i} ${SPEAKER[rec.transcript[i].speaker] || rec.transcript[i].speaker}: `),
+        rec.transcript[i].text))
+      .filter(Boolean);
+
+    const box = h('div', { class: `appeal-box appeal-box--${appeal.status}` },
+      h('div', { class: 'appeal-box__head' },
+        h('span', { class: 'appeal-box__title' }, 'Апелляция'),
+        h('span', { class: `pill ${cls}` }, label),
+        h('span', { class: 'appeal-box__date' }, new Date(appeal.created_at).toLocaleString())
+      ),
+      h('div', { class: 'appeal-box__row' }, h('span', { class: 'appeal-box__key' }, 'Спорная оценка'), answerLabel(c, origValue)),
+      h('div', { class: 'appeal-box__row' }, h('span', { class: 'appeal-box__key' }, 'Комментарий оператора'), appeal.comment),
+      reviewer && fragment.length
+        ? h('div', { class: 'fragment' }, h('span', { class: 'appeal-box__key' }, 'Фрагмент диалога'), ...fragment)
+        : null,
+      appeal.decision
+        ? h('div', { class: 'decision' },
+            h('div', { class: 'appeal-box__row' },
+              h('span', { class: 'appeal-box__key' }, 'Решение проверяющего'),
+              appeal.status === 'changed'
+                ? `оценка изменена: ${answerLabel(c, origValue)} → ${answerLabel(c, appeal.decision.value)}`
+                : `оценка подтверждена (${answerLabel(c, origValue)})`),
+            h('div', { class: 'appeal-box__row' }, h('span', { class: 'appeal-box__key' }, 'Причина'), appeal.decision.reason),
+            appeal.decision.total_before != null
+              ? h('div', { class: 'appeal-box__row' }, h('span', { class: 'appeal-box__key' }, 'Итог'),
+                  `${appeal.decision.total_before} → ${appeal.decision.total_after}`)
+              : null)
+        : null
+    );
+
+    if (reviewer) box.append(renderDecisionControls(ev, c, appeal));
+    return box;
+  }
+
+  function renderDecisionControls(ev, c, appeal) {
+    const form = state.ui.decision && state.ui.decision.criterionId === c.id ? state.ui.decision : null;
+    if (!form) {
+      const again = appeal.status !== 'open';
+      return h('div', { class: 'inline-form__actions' },
+        h('button', { class: 'btn btn--primary btn--sm', type: 'button', onclick: () => openDecision(c, 'confirm') },
+          again ? 'Подтвердить исходную' : 'Подтвердить оценку'),
+        h('button', { class: 'btn btn--dark btn--sm', type: 'button', onclick: () => openDecision(c, 'change') },
+          again ? 'Изменить решение' : 'Изменить оценку')
+      );
+    }
+
+    const origValue = appeal.original_answer ? appeal.original_answer.value : undefined;
+    const children = [h('label', { class: 'inline-form__label' }, form.kind === 'confirm' ? 'Подтвердить оценку' : 'Изменить оценку')];
+    let select = null;
+    let preview = null;
+
+    if (form.kind === 'change') {
+      const options = answerOptions(c).filter((o) => !sameValue(o.value, origValue));
+      if (form.value === undefined || !options.some((o) => sameValue(o.value, form.value))) form.value = options[0]?.value;
+      select = h('select', {
+        class: 'input input--sm',
+        onchange: (e) => {
+          form.value = JSON.parse(e.target.value);
+          preview.textContent = previewText(ev, c, form.value);
+        },
+      }, options.map((o) => h('option', { value: JSON.stringify(o.value), selected: sameValue(o.value, form.value) }, o.label)));
+      preview = h('div', { class: 'decision-preview' }, previewText(ev, c, form.value));
+      children.push(
+        h('div', { class: 'inline-form__row' }, h('span', { class: 'appeal-box__key' }, `Было: ${answerLabel(c, origValue)} · Новая оценка`), select),
+        preview
+      );
+    }
+
+    const reason = h('textarea', {
+      class: 'input', rows: '2', placeholder: 'Причина решения (обязательно)',
+      oninput: (e) => (form.reason = e.target.value),
+    });
+    reason.value = form.reason || '';
+    children.push(
+      reason,
+      h('div', { class: 'inline-form__actions' },
+        h('button', {
+          class: `btn btn--sm ${form.kind === 'confirm' ? 'btn--primary' : 'btn--dark'}`,
+          type: 'button',
+          onclick: () => submitDecision(ev, c, appeal, form.kind, form.value, reason.value),
+        }, form.kind === 'confirm' ? 'Подтвердить' : 'Сохранить новую оценку'),
+        h('button', { class: 'btn btn--text btn--sm', type: 'button', onclick: () => closeForms() }, 'Отмена')
+      )
+    );
+    return h('div', { class: 'inline-form inline-form--reviewer' }, ...children);
+  }
+
+  function openDecision(c, kind) {
+    state.ui.decision = { criterionId: c.id, kind, value: undefined, reason: '' };
+    renderEvalPanel();
+    focusField(`[data-criterion="${c.id}"] .inline-form--reviewer textarea`);
+  }
+
+  function closeForms() {
+    state.ui.appealFor = null;
+    state.ui.decision = null;
+    state.ui.draft = '';
+    renderEvalPanel();
+  }
+
+  function focusField(selector) {
+    const el = $(selector);
+    if (el) {
+      el.focus();
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  function answerOptions(c) {
+    const opts =
+      c.type === 'scale'
+        ? c.scale.map((s) => ({ value: Number(s.value), label: `${s.value} — ${s.label}` }))
+        : c.type === 'critical'
+          ? [{ value: true, label: 'Да — нарушение выявлено' }, { value: false, label: 'Нет — нарушений нет' }]
+          : [{ value: true, label: 'Да' }, { value: false, label: 'Нет' }];
+    if (c.na_allowed && c.type !== 'critical') opts.push({ value: NA, label: 'N/A — критерий неприменим' });
+    return opts;
+  }
+
+  const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  /** Предпросмотр: каким станет итог, если принять новую оценку (тот же алгоритм пересчёта). */
+  function previewText(ev, c, value) {
+    const before = computeScore(state.checklist, finalAnswers(ev)).total;
+    const answers = finalAnswers(ev);
+    answers[c.id] = { ...answers[c.id], value };
+    const after = computeScore(state.checklist, answers).total;
+    return `Итог: ${before ?? '—'} → ${after ?? '—'}${value === NA ? ' (вес критерия будет перераспределён)' : ''}`;
   }
 
   async function runEvaluation() {
@@ -525,26 +767,103 @@
    * 8. Апелляции
    * ===================================================================== */
 
-  async function createAppeal(ev, criterion) {
-    const comment = root.prompt(`Апелляция по критерию «${criterion.title}». Комментарий:`);
-    if (!comment) return;
+  /* ---------- данные апелляций ---------- */
+
+  /** Апелляции к текущей версии оценки (после переоценки старые апелляции не применяются). */
+  function appealsFor(ev) {
+    return state.appeals.filter(
+      (a) => a.evaluation_id === ev.id && (!a.evaluation_updated_at || a.evaluation_updated_at === ev.updated_at)
+    );
+  }
+
+  function appealFor(ev, criterionId) {
+    const list = appealsFor(ev).filter((a) => a.criterion_id === criterionId);
+    return list[list.length - 1] || null;
+  }
+
+  /** Ответы с учётом решений проверяющего: «Изменить оценку» заменяет ответ модели. */
+  function finalAnswers(ev) {
+    const answers = { ...(ev.answers || {}) };
+    for (const a of appealsFor(ev)) {
+      if (a.status === 'changed' && a.decision) answers[a.criterion_id] = { ...answers[a.criterion_id], value: a.decision.value };
+    }
+    return answers;
+  }
+
+  function finalTotal(ev) {
+    return computeScore(state.checklist, finalAnswers(ev)).total;
+  }
+
+  async function submitAppeal(ev, c, comment) {
+    comment = (comment || '').trim();
+    if (!comment) return setStatus('Добавьте комментарий к апелляции', true);
+    const now = new Date().toISOString();
     const appeal = {
       id: `ap-${Date.now()}`,
       evaluation_id: ev.id,
+      evaluation_updated_at: ev.updated_at,
       conversation_id: ev.conversation_id,
       group_id: ev.group_id,
-      criterion_id: criterion.id,
-      criterion_title: criterion.title,
-      original_answer: ev.answers[criterion.id],
+      checklist_id: ev.checklist_id,
+      criterion_id: c.id,
+      criterion_title: c.title,
+      original_answer: ev.answers[c.id],
       comment,
       status: 'open', // open → confirmed | changed
-      decision: null, // { value, reason, decided_at }
+      decision: null, // { value, reason, decided_at, total_before, total_after }
+      created_at: now,
     };
     try {
-      await api.put('appeals', appeal);
-      state.appeals.push(appeal);
+      const saved = await api.put('appeals', appeal);
+      state.appeals.push(saved);
+      state.ui.appealFor = null;
+      state.ui.draft = '';
       updateAppealsCount();
-      setStatus('Апелляция сохранена');
+      renderEvalPanel();
+      setStatus(`Апелляция по критерию «${c.title}» сохранена. Переключитесь в режим «Проверяющий», чтобы рассмотреть её.`);
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  }
+
+  async function submitDecision(ev, c, appeal, kind, value, reason) {
+    reason = (reason || '').trim();
+    if (!reason) return setStatus('Укажите причину решения', true);
+    const origValue = appeal.original_answer ? appeal.original_answer.value : undefined;
+    if (kind === 'change' && (value === undefined || sameValue(value, origValue))) {
+      return setStatus('Новая оценка совпадает с исходной — используйте «Подтвердить оценку»', true);
+    }
+
+    const totalBefore = finalTotal(ev);
+    const updated = {
+      ...appeal,
+      status: kind === 'confirm' ? 'confirmed' : 'changed',
+      decision: { value: kind === 'confirm' ? origValue : value, reason, decided_at: new Date().toISOString() },
+    };
+    // Пересчёт итога на фронтенде тем же алгоритмом (N/A исключает вес и перераспределяет его).
+    const others = state.appeals.filter((a) => a.id !== appeal.id);
+    const totalAfter = (() => {
+      const saved = state.appeals;
+      state.appeals = [...others, updated];
+      const t = finalTotal(ev);
+      state.appeals = saved;
+      return t;
+    })();
+    updated.decision.total_before = totalBefore;
+    updated.decision.total_after = totalAfter;
+
+    try {
+      const saved = await api.put('appeals', updated);
+      state.appeals = state.appeals.map((a) => (a.id === saved.id ? saved : a));
+      state.ui.decision = null;
+      updateAppealsCount();
+      renderEvalPanel();
+      renderConvSelect();
+      setStatus(
+        kind === 'confirm'
+          ? `Оценка по «${c.title}» подтверждена. Итог ${totalAfter ?? '—'}`
+          : `Оценка по «${c.title}» изменена. Итог пересчитан: ${totalBefore ?? '—'} → ${totalAfter ?? '—'}`
+      );
     } catch (err) {
       setStatus(err.message, true);
     }
@@ -557,6 +876,25 @@
     el.hidden = !open;
   }
 
+  /* ---------- режим «Оператор / Проверяющий» ---------- */
+
+  function setMode(mode) {
+    state.mode = mode === 'reviewer' ? 'reviewer' : 'operator';
+    try {
+      localStorage.setItem('cqa-mode', state.mode);
+    } catch {
+      /* хранилище может быть недоступно — режим просто не запомнится */
+    }
+    $('#cqa-app').classList.toggle('is-reviewer', state.mode === 'reviewer');
+    $$('.mode-switch__btn').forEach((b) => b.setAttribute('aria-checked', String(b.dataset.mode === state.mode)));
+    state.ui.appealFor = null;
+    state.ui.decision = null;
+    renderEvalPanel();
+    if (parseRoute().view === 'appeals') renderAppeals();
+  }
+
+  /* ---------- экран «Апелляции» (сводный список) ---------- */
+
   async function renderAppeals() {
     try {
       state.appeals = await api.list('appeals');
@@ -565,19 +903,33 @@
       setStatus(err.message, true);
     }
     const box = $('#appeals-list');
-    if (!state.appeals.length) return box.replaceChildren(emptyState('⚖️', 'Апелляций пока нет. Оспорить оценку можно в карточке результата.'));
-    const STATUS = { open: ['На рассмотрении', 'pill--warn'], confirmed: ['Оценка подтверждена', 'pill--ok'], changed: ['Оценка изменена', 'pill--ok'] };
+    if (!state.appeals.length) {
+      return box.replaceChildren(emptyState('⚖️', 'Апелляций пока нет. Оспорить оценку можно в карточке критерия.'));
+    }
+    const order = { open: 0, changed: 1, confirmed: 2 };
+    const list = [...state.appeals].sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3) || String(b.created_at).localeCompare(String(a.created_at)));
     box.replaceChildren(
-      ...state.appeals.map((a) => {
-        const [label, cls] = STATUS[a.status] || [a.status, ''];
+      ...list.map((a) => {
+        const [label, cls] = APPEAL_STATUS[a.status] || [a.status, ''];
+        const c = state.checklist && state.checklist.criteria.find((x) => x.id === a.criterion_id);
+        const fmt = (v) => (c ? answerLabel(c, v) : JSON.stringify(v));
+        const firstEvidence = (a.original_answer?.evidence || [])[0];
         return h('div', { class: 'appeal' },
           h('div', { class: 'appeal__head' },
             h('span', { class: 'pill pill--dark' }, a.conversation_id),
             a.criterion_title || a.criterion_id,
             h('span', { class: `pill ${cls}` }, label)
           ),
-          h('p', { class: 'appeal__comment' }, a.comment),
-          h('a', { class: 'small', href: `#/conversations/${encodeURIComponent(a.conversation_id)}` }, 'Открыть диалог →')
+          h('p', { class: 'appeal__comment' }, `Оператор: ${a.comment}`),
+          a.decision
+            ? h('p', { class: 'appeal__comment' },
+                `Проверяющий: ${a.status === 'changed' ? `${fmt(a.original_answer?.value)} → ${fmt(a.decision.value)}` : 'оценка подтверждена'}. ${a.decision.reason}`,
+                a.decision.total_before != null ? ` Итог ${a.decision.total_before} → ${a.decision.total_after}.` : '')
+            : h('p', { class: 'appeal__comment muted' }, `Спорная оценка: ${fmt(a.original_answer?.value)}`),
+          h('a', {
+            class: 'small',
+            href: firstEvidence != null ? msgLink(a.conversation_id, firstEvidence) : `#/conversations/${encodeURIComponent(a.conversation_id)}`,
+          }, state.mode === 'reviewer' && a.status === 'open' ? 'Рассмотреть в карточке →' : 'Открыть диалог →')
         );
       })
     );
@@ -819,6 +1171,7 @@
     });
     ['#f-lang', '#f-channel'].forEach((s) => $(s).addEventListener('change', renderConvSelect));
     $('#eval-btn').addEventListener('click', runEvaluation);
+    $$('.mode-switch__btn').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
     bindChecklistToolbar();
     root.addEventListener('beforeunload', (e) => {
       if (state.dirty) e.preventDefault();
@@ -838,6 +1191,14 @@
       setStatus(`Сервер недоступен: ${err.message}`, true);
     }
 
+    let savedMode = 'operator';
+    try {
+      savedMode = localStorage.getItem('cqa-mode') || 'operator';
+    } catch {
+      /* без хранилища — режим по умолчанию */
+    }
+    setMode(savedMode);
+
     await loadConversations();
     root.addEventListener('hashchange', onRoute);
     if (!location.hash) location.hash = '#/conversations';
@@ -845,7 +1206,7 @@
   }
 
   // Публичное API модуля (удобно для отладки в консоли и будущей интеграции).
-  root.CQA = { config: CONFIG, state, api, computeScore, NA };
+  root.CQA = { config: CONFIG, state, api, computeScore, finalAnswers, NA };
 
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
