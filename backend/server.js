@@ -7,7 +7,7 @@ import { createReadStream } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
 import { DATA_DIR, DEFAULT_GROUP_ID, FRONTEND_DIR, PORT, STORE_DIR } from './config.js';
 import { assertGroupId, fetchDataset, loadDataset, syncDataset } from './fetch_dataset.js';
-import { evaluateConversation, loadChecklist } from './evaluator.js';
+import { evaluateConversation, loadChecklist, migrateChecklist, toCriterionId, toEvaluationDoc } from './evaluator.js';
 
 // ---------- утилиты ----------
 
@@ -51,10 +51,36 @@ async function readJsonBody(req, limit = 5 * 1024 * 1024) {
 const COLLECTIONS = new Set(['checklists', 'evaluations', 'appeals']);
 const ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
 
+// Данные, сохранённые до перехода на формат JSON 1.0: коды критериев c01…c08 и номера реплик с 0.
+// При чтении переводим их в коды contact…critical и нумерацию с 1 (turn_base = 1).
+const shiftTurns = (list) => (Array.isArray(list) ? list.map((n) => n + 1) : list);
+
+function migrateAnswer(a) {
+  if (!a || typeof a !== 'object') return a;
+  return { ...a, evidence: shiftTurns(a.evidence), checked_range: a.checked_range ? shiftTurns(a.checked_range) : a.checked_range };
+}
+
+function migrateDoc(name, doc) {
+  if (!doc || typeof doc !== 'object') return doc;
+  if (name === 'checklists') return migrateChecklist(doc);
+  if (doc.turn_base === 1) return doc;
+  if (name === 'evaluations' && doc.answers) {
+    const answers = {};
+    for (const [id, a] of Object.entries(doc.answers)) answers[toCriterionId(id)] = migrateAnswer(a);
+    return { ...doc, answers, turn_base: 1 };
+  }
+  if (name === 'appeals') {
+    return { ...doc, criterion_id: toCriterionId(doc.criterion_id), original_answer: migrateAnswer(doc.original_answer), turn_base: 1 };
+  }
+  return doc;
+}
+
 async function readCollection(name) {
   const file = join(STORE_DIR, `${name}.json`);
   try {
-    return JSON.parse(await readFile(file, 'utf8'));
+    const docs = JSON.parse(await readFile(file, 'utf8'));
+    for (const id of Object.keys(docs)) docs[id] = migrateDoc(name, docs[id]);
+    return docs;
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
     // Первый запуск: чек-листы инициализируются из PDF-конфигурации организаторов.
@@ -106,43 +132,6 @@ async function resolveAudioUrl(playerUrl) {
 // ---------- оценка ----------
 
 const evaluationsInFlight = new Map(); // ключ -> Promise, чтобы двойной клик не запускал оценку дважды
-
-// Ответ модели («Да»/«Нет»/«N/A»/балл) -> формат ответа, который использует фронтенд.
-function toAnswerValue(v) {
-  if (v === 'Да') return true;
-  if (v === 'Нет') return false;
-  if (v === 'N/A') return 'NA';
-  return v;
-}
-
-function toEvaluationDoc(ev, groupId) {
-  const answers = {};
-  for (const r of ev.итог.критерии) {
-    answers[r.id] = {
-      value: toAnswerValue(r.оценка),
-      explanation: r.обоснование,
-      quote: r.реплика_доказательство,
-      evidence: r.номера_реплик,
-      checked_range: r.проверенный_участок.length ? [r.проверенный_участок[0], r.проверенный_участок.at(-1)] : null,
-    };
-  }
-  return {
-    id: `${groupId}__${ev.conversation_id}__${ev.checklist_id}`,
-    group_id: groupId,
-    conversation_id: ev.conversation_id,
-    checklist_id: ev.checklist_id,
-    checklist_version: ev.checklist_version,
-    answers,
-    summary: ev.оценка_llm.резюме,
-    total: ev.итог.итоговый_балл,
-    has_critical: ev.итог.грубая_ошибка,
-    model: ev.модель,
-    attempts: ev.попыток,
-    duration_sec: ev.время_сек,
-    cost: ev.стоимость,
-    source: 'llm',
-  };
-}
 
 // ---------- маршруты API ----------
 
@@ -259,13 +248,16 @@ async function handleApi(req, res, url) {
       evaluationsInFlight.set(
         key,
         (async () => {
-          const ev = await evaluateConversation(record, checklist);
+          const ev = await evaluateConversation(record, checklist); // не бросает: ошибка — запись status "error"
+          if (ev.result.status === 'error') {
+            throw Object.assign(new Error(ev.result.error), { code: ev.meta.error_code, result: ev.result });
+          }
           const doc = toEvaluationDoc(ev, g);
           const docs = await readCollection('evaluations');
           const now = new Date().toISOString();
           docs[doc.id] = { ...doc, created_at: now, updated_at: now };
           await writeCollection('evaluations', docs);
-          console.log(`[evaluate] ${key}: ${ev.итог.итоговый_балл} баллов, $${ev.стоимость.usd.toFixed(4)}, ${ev.время_сек} с`);
+          console.log(`[evaluate] ${key}: ${ev.result.score.final_score} баллов, $${ev.meta.cost.usd.toFixed(4)}, ${ev.meta.seconds} с`);
           return docs[doc.id];
         })().finally(() => evaluationsInFlight.delete(key))
       );
@@ -279,7 +271,8 @@ async function handleApi(req, res, url) {
         err.code ||
         (err.status ? `API_${err.status}` : /timeout/i.test(err.name) ? 'API_TIMEOUT' : /connection/i.test(err.name) ? 'API_CONNECTION' : 'EVALUATION_FAILED');
       console.error(`[evaluate] ${key}: ${code} — ${err.message}`);
-      throw Object.assign(httpError(502, `Оценка не выполнена: ${err.message}`), { code });
+      // В ответе есть и запись об ошибке в формате JSON 1.0 (status "error").
+      return sendJson(res, 502, { error: `Оценка не выполнена: ${err.message}`, code, isSuccess: false, result: err.result || null });
     }
   }
 

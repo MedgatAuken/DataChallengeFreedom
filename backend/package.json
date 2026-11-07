@@ -13,7 +13,9 @@
     "fetch": "node fetch_dataset.js",
     "fetch:dev": "node fetch_dataset.js DEV",
     "test:eval": "node test_eval.js",
-    "test:stability": "node test_runner.js"
+    "test:stability": "node test_runner.js",
+    "results:dev": "node generate_results.js",
+    "results:prod": "node generate_results.js --prod"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0"

@@ -25,3 +25,5 @@ export const DEFAULT_GROUP_ID = process.env.CQA_GROUP_ID || 'DEV';
 export const DATA_DIR = join(here, 'data');
 export const STORE_DIR = join(DATA_DIR, 'store');
 export const FRONTEND_DIR = join(here, '..', 'frontend');
+// Файлы для сдачи результатов: results/dev/results.json и results/prod/results.json в корне репозитория.
+export const RESULTS_DIR = join(here, '..', 'results');

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Тест модуля оценки на одном диалоге из локального набора.
+// Тест модуля оценки на одном диалоге из локального набора. Результат — запись в формате JSON 1.0.
 //
-//   node test_eval.js                 -> p1-ru-001 из data/dev_data.json
-//   node test_eval.js p1-kz-001       -> другой диалог
-//   node test_eval.js p1-ru-001 --json -> только итоговый JSON
+//   node test_eval.js                  -> p1-ru-001 из data/dev_data.json
+//   node test_eval.js p1-kz-001        -> другой диалог
+//   node test_eval.js p1-ru-001 --json -> только запись JSON 1.0
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DATA_DIR } from './config.js';
-import { EFFORT, MODEL, evaluateConversation, loadChecklist } from './evaluator.js';
+import { EFFORT, MODEL, evaluateConversation, loadChecklist, validateResultRecord } from './evaluator.js';
 
 const args = process.argv.slice(2);
 const jsonOnly = args.includes('--json');
@@ -35,51 +35,61 @@ if (!jsonOnly) {
   console.log('→ Отправляю в LLM…\n');
 }
 
-let ev;
-try {
-  ev = await evaluateConversation(record, checklist);
-} catch (err) {
-  console.error(`✗ ${err.message}`);
-  process.exit(1);
-}
+// evaluateConversation не бросает исключений: при сбое result.status = "error".
+const { result, meta } = await evaluateConversation(record, checklist);
 
-// Сохраняем полный результат, чтобы его можно было посмотреть и переиспользовать.
+// Сохраняем запись и служебные данные, чтобы их можно было посмотреть и переиспользовать.
 const outDir = join(DATA_DIR, 'eval_results');
 await mkdir(outDir, { recursive: true });
 const outFile = join(outDir, `${record.conversation_id}.json`);
-await writeFile(outFile, JSON.stringify(ev, null, 2), 'utf8');
+await writeFile(outFile, JSON.stringify({ result, meta }, null, 2), 'utf8');
+
+const formatErrors = validateResultRecord(result, checklist, record.transcript.length);
 
 if (jsonOnly) {
-  console.log(JSON.stringify(ev, null, 2));
-  process.exit(0);
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(result.status === 'ok' && !formatErrors.length ? 0 : 1);
 }
 
-const { итог, стоимость } = ev;
-const fmtAnswer = (r) => (r.оценка === undefined ? '—' : String(r.оценка));
+if (result.status === 'error') {
+  console.log('ЗАПИСЬ JSON 1.0 (ошибка)');
+  console.log(JSON.stringify(result, null, 2));
+  console.log(`\n✗ Оценка не выполнена: ${meta.error_code} — ${meta.error_detail}`);
+  process.exit(1);
+}
+
+const fmtValue = (v) => (v === null ? 'null (N/A)' : JSON.stringify(v));
+const rows = Object.fromEntries(meta.breakdown.rows.map((r) => [r.criterion_id, r]));
 
 console.log('КРИТЕРИИ');
-for (const r of итог.критерии) {
+for (const x of result.criteria) {
+  const r = rows[x.criterion_id];
   const pts =
-    r.статус === 'применим' ? `${r.баллы} из ${r.эффективный_вес} (вес ${r.исходный_вес})`
-    : r.статус === 'N/A' ? `исключён, вес ${r.исходный_вес} перераспределён`
+    r.status === 'scored' ? `${r.points} из ${r.effective_weight} (вес ${r.weight})`
+    : r.status === 'na' ? `исключён, вес ${r.weight} перераспределён`
     : 'без баллов';
-  console.log(`\n  ${r.id} ${r.критерий}: ${fmtAnswer(r)}  →  ${pts}`);
-  console.log(`     Обоснование: ${r.обоснование}`);
-  if (r.реплика_доказательство) console.log(`     Доказательство [#${r.номера_реплик.join(', #')}]: «${r.реплика_доказательство}»`);
-  if (r.проверенный_участок.length) console.log(`     Проверенный участок: #${r.проверенный_участок.join('–#')}`);
+  const note = meta.notes[x.criterion_id] || {};
+  console.log(`\n  ${x.criterion_id} · ${r.title}: ${fmtValue(x.value)}  →  ${pts}`);
+  console.log(`     rationale: ${x.rationale}`);
+  console.log(`     evidence_turns: [${x.evidence_turns.join(', ')}]${note.quote ? `  «${note.quote}»` : ''}`);
+  if (note.checked_turns && note.checked_turns.length) console.log(`     Проверенный участок: #${note.checked_turns.join('–#')}`);
 }
 
 console.log('\nСЕКЦИИ');
-for (const s of итог.секции) console.log(`  ${s.секция}: ${s.баллы} / ${s.максимум}`);
+for (const s of meta.breakdown.sections) console.log(`  ${s.title}: ${s.points} / ${s.max}`);
 
-console.log('\nИТОГ');
-console.log(`  Итоговый балл: ${итог.итоговый_балл ?? 'не рассчитывается'} / ${итог.максимум}`);
-console.log(`  N/A: ${итог.na_критерии.join(', ') || 'нет'}  (сумма применимых весов ${итог.сумма_применимых_весов})`);
-console.log(`  Грубая ошибка: ${итог.грубая_ошибка ? 'ДА — ' + итог.грубые_ошибки.map((g) => g.обоснование).join('; ') : 'нет'}`);
-console.log(`  Резюме: ${ev.оценка_llm.резюме}`);
+console.log('\nSCORE');
+console.log(`  final_score: ${result.score.final_score ?? 'null (нет применимых критериев)'}`);
+console.log(`  critical_flag: ${result.score.critical_flag}`);
+console.log(`  N/A: ${meta.breakdown.na.join(', ') || 'нет'}  (сумма применимых весов ${meta.breakdown.applicable_weight})`);
+console.log(`  summary: ${meta.summary}`);
 
+console.log('\nФОРМАТ JSON 1.0');
+console.log(formatErrors.length ? `  ✗ ${formatErrors.join('\n  ✗ ')}` : '  ✓ запись соответствует формату');
+
+const cost = meta.cost;
 console.log('\nСТОИМОСТЬ');
-console.log(`  Модель: ${стоимость.модель}, вызовов: ${стоимость.вызовов}, время: ${ev.время_сек} с`);
-console.log(`  Токены: вход ${стоимость.input_tokens}, выход ${стоимость.output_tokens} (включая размышления), кэш: запись ${стоимость.cache_write_tokens} / чтение ${стоимость.cache_read_tokens}`);
-console.log(`  Стоимость оценки: $${стоимость.usd.toFixed(4)}`);
+console.log(`  Модель: ${cost.model}, вызовов: ${cost.calls}, время: ${meta.seconds} с`);
+console.log(`  Токены: вход ${cost.input_tokens}, выход ${cost.output_tokens} (включая размышления), кэш: запись ${cost.cache_write_tokens} / чтение ${cost.cache_read_tokens}`);
+console.log(`  Стоимость оценки: $${cost.usd.toFixed(4)}`);
 console.log(`\n✓ Полный результат: ${outFile}`);

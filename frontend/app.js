@@ -700,6 +700,8 @@
     // lang — для правильных переносов длинных слов (казахский, английский, русский).
     const transcript = h('div', { class: 'transcript', lang: LANG_CODE[rec.language] || null },
       rec.transcript.map((m, i) => {
+        // Номер реплики (turn) — с 1 по всему транскрипту, как в формате JSON 1.0 и в обоснованиях модели.
+        const turn = i + 1;
         let time;
         if (t0 != null && isIsoTime(m.timestamp)) {
           const offset = (Date.parse(m.timestamp) - t0) / 1000;
@@ -710,9 +712,9 @@
         } else {
           time = h('span', { class: 'msg__time', title: m.timestamp }, m.timestamp);
         }
-        return h('div', { class: `msg msg--${m.speaker}`, id: `msg-${i}` },
+        return h('div', { class: `msg msg--${m.speaker}`, id: `msg-${turn}` },
           h('div', { class: 'msg__meta' },
-            h('a', { class: 'msg__speaker', href: msgLink(rec.conversation_id, i), title: 'Ссылка на реплику' }, `#${i} ${SPEAKER[m.speaker] || m.speaker}`),
+            h('a', { class: 'msg__speaker', href: msgLink(rec.conversation_id, turn), title: 'Ссылка на реплику' }, `#${turn} ${SPEAKER[m.speaker] || m.speaker}`),
             time
           ),
           h('div', { class: 'msg__text' }, m.text)
@@ -1011,9 +1013,12 @@
     const origValue = appeal.original_answer ? appeal.original_answer.value : undefined;
     const fragment = (appeal.original_answer?.evidence || [])
       .slice(0, 3)
-      .map((i) => rec.transcript[i] && h('div', { class: 'fragment__msg', ...evidenceTarget(rec.conversation_id, [i]) },
-        h('span', { class: 'fragment__who' }, `#${i} ${SPEAKER[rec.transcript[i].speaker] || rec.transcript[i].speaker}: `),
-        rec.transcript[i].text))
+      .map((turn) => {
+        const m = rec.transcript[turn - 1]; // turn — с 1
+        return m && h('div', { class: 'fragment__msg', ...evidenceTarget(rec.conversation_id, [turn]) },
+          h('span', { class: 'fragment__who' }, `#${turn} ${SPEAKER[m.speaker] || m.speaker}: `),
+          m.text);
+      })
       .filter(Boolean);
 
     const box = h('div', { class: `appeal-box appeal-box--${appeal.status}` },
@@ -1418,7 +1423,7 @@
 
       $('.crit__num', node).textContent = String(cl.criteria.indexOf(c) + 1).padStart(2, '0');
       field('section').replaceChildren(...cl.sections.map((s) => h('option', { value: s.id }, s.title)));
-      for (const name of ['title', 'section', 'type', 'weight', 'description', 'na_condition']) field(name).value = c[name] ?? '';
+      for (const name of ['id', 'title', 'section', 'type', 'weight', 'description', 'na_condition']) field(name).value = c[name] ?? '';
       field('na_allowed').checked = Boolean(c.na_allowed);
       field('scale').value = scaleToText(c.scale);
 
@@ -1437,6 +1442,7 @@
         if (name === 'na_allowed') c.na_allowed = e.target.checked;
         else if (name === 'weight') c.weight = Number(e.target.value) || 0;
         else if (name === 'scale') c.scale = textToScale(e.target.value);
+        else if (name === 'id') c.id = e.target.value.trim(); // criterion_id для формата JSON 1.0
         else c[name] = e.target.value;
         if (name === 'type') {
           if (c.type === 'critical') {
@@ -1483,7 +1489,10 @@
     cl.criteria.forEach((c, i) => {
       const label = c.title || `Критерий ${i + 1}`;
       if (!c.title.trim()) errors.push(`Критерий ${i + 1}: нет названия`);
-      if (ids.has(c.id)) errors.push(`${label}: повторяющийся id`);
+      if (!/^[a-z][a-z0-9_]{0,39}$/.test(c.id || '')) {
+        errors.push(`${label}: criterion_id «${c.id}» — латиница в нижнем регистре, цифры и «_», например closure`);
+      }
+      if (ids.has(c.id)) errors.push(`${label}: criterion_id «${c.id}» повторяется`);
       ids.add(c.id);
       if (c.type !== 'critical' && !(c.weight > 0)) errors.push(`${label}: вес должен быть больше 0`);
       if (c.type === 'scale' && (!c.scale || c.scale.length < 2)) errors.push(`${label}: в шкале нужно минимум 2 ступени`);
@@ -1541,11 +1550,12 @@
     }));
     $('#cl-add').addEventListener('click', needChecklist(() => {
       const cl = state.checklist;
-      let n = cl.criteria.length + 1;
-      while (cl.criteria.some((c) => c.id === `c${String(n).padStart(2, '0')}`)) n++;
+      // Временный criterion_id; для сдачи результатов замените его кодом, который дадут организаторы.
+      let n = 1;
+      while (cl.criteria.some((c) => c.id === `new_criterion_${n}`)) n++;
       const section = (cl.sections.find((s) => s.id !== 'critical') || cl.sections[0]).id;
       cl.criteria.push({
-        id: `c${String(n).padStart(2, '0')}`,
+        id: `new_criterion_${n}`,
         section,
         title: 'Новый критерий',
         type: 'binary',

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Проверка стабильности модуля оценки на реальных диалогах DEV.
+// Проверка стабильности модуля оценки на реальных диалогах DEV (формат результата — JSON 1.0).
 //
 // Берёт по 3 диалога на каждый язык (RU, KZ, EN; в RU — один звонок), по очереди отправляет их
 // в evaluator.js и проверяет:
@@ -19,7 +19,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { DATA_DIR } from './config.js';
-import { EFFORT, MODEL, computeFinalScore, estimateCost, evaluateConversation, loadChecklist } from './evaluator.js';
+import { EFFORT, MODEL, computeFinalScore, evaluateConversation, loadChecklist, validateResultRecord } from './evaluator.js';
 
 // Алгоритм расчёта фронтенда (frontend/app.js) — для сверки с бэкендом.
 const require = createRequire(import.meta.url);
@@ -86,11 +86,12 @@ function pickRecords(records) {
 
 /* ---------- проверки расчёта ---------- */
 
-const toFrontendValue = (v) => (v === 'Да' ? true : v === 'Нет' ? false : v === 'N/A' ? 'NA' : v);
+// JSON 1.0: null = N/A; во фронтенде N/A обозначается 'NA'.
+const toFrontendValue = (v) => (v === null ? 'NA' : v);
 
-function frontendTotal(llmResult, checklist) {
+function frontendTotal(criteria, checklist) {
   const answers = {};
-  for (const x of llmResult.критерии) answers[x.id] = { value: toFrontendValue(x.оценка) };
+  for (const x of criteria) answers[x.criterion_id] = { value: toFrontendValue(x.value) };
   return frontend.computeScore(checklist, answers).total;
 }
 
@@ -98,76 +99,82 @@ function frontendTotal(llmResult, checklist) {
 function checkScore(score, checklist, label) {
   const checks = [];
   const add = (name, ok, detail = '') => checks.push({ name: `${label}${name}`, ok: Boolean(ok), detail });
-  const scored = score.критерии.filter((r) => r.статус === 'применим');
-  const na = score.критерии.filter((r) => r.статус === 'N/A');
+  const scored = score.rows.filter((r) => r.status === 'scored');
+  const na = score.rows.filter((r) => r.status === 'na');
 
-  if (score.сумма_применимых_весов > 0) {
-    add('итог в диапазоне 0–100', score.итоговый_балл >= 0 && score.итоговый_балл <= 100, `итог ${score.итоговый_балл}`);
-    const effSum = scored.reduce((s, r) => s + r.эффективный_вес, 0);
+  if (score.applicable_weight > 0) {
+    add('итог в диапазоне 0–100', score.final_score >= 0 && score.final_score <= 100, `итог ${score.final_score}`);
+    const effSum = scored.reduce((s, r) => s + r.effective_weight, 0);
     add('веса после N/A дают 100', approx(effSum, 100), `сумма ${effSum.toFixed(2)}`);
-    const ptsSum = scored.reduce((s, r) => s + r.баллы, 0);
-    add('сумма баллов = итог', approx(ptsSum, score.итоговый_балл), `${ptsSum.toFixed(2)} vs ${score.итоговый_балл}`);
-    add('итог округлён до 2 знаков', Number.isInteger(Math.round(score.итоговый_балл * 100 * 1e6) / 1e6), String(score.итоговый_балл));
+    const ptsSum = scored.reduce((s, r) => s + r.points, 0);
+    add('сумма баллов = итог', approx(ptsSum, score.final_score), `${ptsSum.toFixed(2)} vs ${score.final_score}`);
+    add('итог округлён до 2 знаков', Number.isInteger(Math.round(score.final_score * 100 * 1e6) / 1e6), String(score.final_score));
   } else {
-    add('без применимых весов итог = null', score.итоговый_балл === null, `итог ${score.итоговый_балл}`);
+    add('без применимых весов итог = null', score.final_score === null, `итог ${score.final_score}`);
   }
-  add('N/A не получают баллов', na.every((r) => r.баллы === null && r.эффективный_вес === 0), na.map((r) => r.id).join(', ') || 'нет N/A');
+  add('N/A не получают баллов', na.every((r) => r.points === null && r.effective_weight === 0), na.map((r) => r.criterion_id).join(', ') || 'нет N/A');
 
-  const critRows = score.критерии.filter((r) => r.статус === 'грубая_ошибка');
-  const critYes = critRows.some((r) => r.оценка === 'Да');
-  add('грубая ошибка — отдельный флаг, без баллов', score.грубая_ошибка === critYes && critRows.every((r) => r.баллы === null), `флаг ${score.грубая_ошибка}`);
+  const critRows = score.rows.filter((r) => r.status === 'critical');
+  const critYes = critRows.some((r) => r.value === true);
+  add('critical_flag = value критерия critical, без баллов', score.critical_flag === critYes && critRows.every((r) => r.points === null), `флаг ${score.critical_flag}`);
 
   const appliedWeight = checklist.criteria
-    .filter((cr) => cr.type !== 'critical' && cr.weight > 0 && !na.some((r) => r.id === cr.id))
+    .filter((cr) => cr.type !== 'critical' && cr.weight > 0 && !na.some((r) => r.criterion_id === cr.id))
     .reduce((s, cr) => s + cr.weight, 0);
-  add('применимый вес посчитан верно', score.сумма_применимых_весов === appliedWeight, `${score.сумма_применимых_весов} vs ${appliedWeight}`);
+  add('применимый вес посчитан верно', score.applicable_weight === appliedWeight, `${score.applicable_weight} vs ${appliedWeight}`);
   return checks;
 }
 
-function scoringChecks(ev, checklist) {
+/** Проверки записи JSON 1.0 и расчёта итога на реальном ответе модели и стресс-вариантах. */
+function scoringChecks(ev, checklist, transcriptLength) {
   const checks = [];
   const add = (name, ok, detail = '') => checks.push({ name, ok: Boolean(ok), detail });
-  const llm = ev.оценка_llm;
+  const { result } = ev;
 
-  // Сам пересчёт на реальном ответе модели.
+  // Формат JSON 1.0: поля, коды критериев, типы value, номера реплик с 1.
+  const formatErrors = validateResultRecord(result, checklist, transcriptLength);
+  add('формат JSON 1.0', !formatErrors.length, formatErrors.join('; '));
+  add('evidence_turns: целые числа ≥ 1, по возрастанию',
+    result.criteria.every((x) => x.evidence_turns.length && x.evidence_turns.every((n, i, a) => Number.isInteger(n) && n >= 1 && (i === 0 || a[i - 1] < n))),
+    result.criteria.map((x) => `${x.criterion_id}:[${x.evidence_turns}]`).join(' '));
+
+  // Пересчёт итога на реальном ответе модели.
   let recalculated;
   try {
-    recalculated = computeFinalScore(llm, checklist);
+    recalculated = computeFinalScore(result.criteria, checklist);
     add('пересчёт не падает', true);
   } catch (err) {
     add('пересчёт не падает', false, err.message);
     return checks;
   }
-  add('итог совпадает с пересчётом', recalculated.итоговый_балл === ev.итог.итоговый_балл, `${recalculated.итоговый_балл} vs ${ev.итог.итоговый_балл}`);
+  add('score.final_score совпадает с пересчётом', recalculated.final_score === result.score.final_score, `${recalculated.final_score} vs ${result.score.final_score}`);
   checks.push(...checkScore(recalculated, checklist, ''));
 
-  const fe = frontendTotal(llm, checklist);
-  add('фронтенд считает так же', fe === recalculated.итоговый_балл, `фронтенд ${fe}, бэкенд ${recalculated.итоговый_балл}`);
+  const fe = frontendTotal(result.criteria, checklist);
+  add('фронтенд считает так же', fe === recalculated.final_score, `фронтенд ${fe}, бэкенд ${recalculated.final_score}`);
 
-  // Стресс 1: все критерии, где N/A разрешён, переводим в N/A.
-  const naAllowed = new Set(checklist.criteria.filter((cr) => cr.na_allowed).map((cr) => cr.id));
-  const allNA = { ...llm, критерии: llm.критерии.map((x) => (naAllowed.has(x.id) ? { ...x, оценка: 'N/A' } : x)) };
+  // Стресс 1: все критерии, где N/A разрешён, переводим в null.
+  const naAllowed = new Set(checklist.criteria.filter((cr) => cr.na_allowed && cr.type !== 'critical').map((cr) => cr.id));
+  const allNA = result.criteria.map((x) => (naAllowed.has(x.criterion_id) ? { ...x, value: null } : x));
   try {
     const s = computeFinalScore(allNA, checklist);
     checks.push(...checkScore(s, checklist, 'стресс «все допустимые N/A»: '));
-    add('стресс «все допустимые N/A»: фронтенд совпадает', frontendTotal(allNA, checklist) === s.итоговый_балл, String(s.итоговый_балл));
+    add('стресс «все допустимые N/A»: фронтенд совпадает', frontendTotal(allNA, checklist) === s.final_score, String(s.final_score));
   } catch (err) {
     add('стресс «все допустимые N/A»: не падает', false, err.message);
   }
 
   // Стресс 2: ни одного применимого критерия с весом — итог не рассчитывается.
   const weighted = new Set(checklist.criteria.filter((cr) => cr.type !== 'critical' && cr.weight > 0).map((cr) => cr.id));
-  const noneApplicable = { ...llm, критерии: llm.критерии.map((x) => (weighted.has(x.id) ? { ...x, оценка: 'N/A' } : x)) };
+  const noneApplicable = result.criteria.map((x) => (weighted.has(x.criterion_id) ? { ...x, value: null } : x));
   try {
     const s = computeFinalScore(noneApplicable, checklist);
-    add('стресс «всё N/A»: итог = null', s.итоговый_балл === null, `итог ${s.итоговый_балл}`);
+    add('стресс «всё N/A»: final_score = null', s.final_score === null, `итог ${s.final_score}`);
   } catch (err) {
     add('стресс «всё N/A»: не падает', false, err.message);
   }
   return checks;
 }
-
-/* ---------- классификация ошибок ---------- */
 
 function classify(err) {
   if (err && err.name === 'EvaluationError') return err.code;
@@ -182,8 +189,8 @@ const EMOTIONAL = /(^|[^а-яё])(отличн|образцов|прекрасн
 
 function styleIssues(ev) {
   const texts = [
-    ...ev.оценка_llm.критерии.map((x) => ({ where: x.id, text: x.обоснование })),
-    { where: 'резюме', text: ev.оценка_llm.резюме },
+    ...ev.result.criteria.map((x) => ({ where: x.criterion_id, text: x.rationale })),
+    { where: 'summary', text: ev.meta.summary },
   ];
   return texts
     .filter((t) => EMOTIONAL.test(t.text || ''))
@@ -192,9 +199,10 @@ function styleIssues(ev) {
 
 const ERROR_HINT = {
   INVALID_JSON: 'модель вернула невалидный JSON (после повтора)',
-  RULES_VIOLATION: 'ответ нарушает правила чек-листа (после повтора)',
+  RULES_VIOLATION: 'ответ нарушает правила чек-листа или формата (после повтора)',
   REFUSAL: 'модель отказалась отвечать',
   MAX_TOKENS: 'ответ обрезан по max_tokens',
+  NO_API_KEY: 'не задан ANTHROPIC_API_KEY',
   EXCEPTION: 'исключение в коде',
 };
 
@@ -236,34 +244,40 @@ for (const [i, rec] of selected.entries()) {
 
   const item = { conversation_id: rec.conversation_id, language: rec.language, channel: rec.channel, replies: rec.transcript.length };
   try {
+    // evaluateConversation не бросает: при сбое возвращает запись status "error" по формату JSON 1.0.
     const ev = await evaluateConversation(rec, checklist);
-    const checks = scoringChecks(ev, checklist);
-    const failed = checks.filter((x) => !x.ok);
-    Object.assign(item, {
-      status: failed.length ? 'scoring_failed' : ev.попыток > 1 ? 'ok_after_retry' : 'ok',
-      total: ev.итог.итоговый_балл,
-      na: ev.итог.na_критерии,
-      critical: ev.итог.грубая_ошибка,
-      attempts: ev.попыток,
-      issues: ev.замечания,
-      seconds: ev.время_сек,
-      cost: ev.стоимость,
-      checks,
-      style: styleIssues(ev),
-      // Ответы и обоснования — в отчёт, чтобы их можно было прочитать и сравнить между прогонами.
-      answers: ev.оценка_llm.критерии.map((x) => ({ id: x.id, оценка: x.оценка, обоснование: x.обоснование })),
-      summary: ev.оценка_llm.резюме,
-    });
+    item.record = ev.result; // запись JSON 1.0 как есть
+    if (ev.result.status === 'error') {
+      const formatErrors = validateResultRecord(ev.result, checklist);
+      Object.assign(item, {
+        status: 'error',
+        error_code: ev.meta.error_code,
+        error: ev.meta.error_detail || ev.result.error,
+        error_record_valid: !formatErrors.length,
+        attempts: ev.meta.attempts,
+        issues: ev.meta.issues,
+        cost: ev.meta.cost,
+      });
+    } else {
+      const checks = scoringChecks(ev, checklist, rec.transcript.length);
+      const failed = checks.filter((x) => !x.ok);
+      Object.assign(item, {
+        status: failed.length ? 'scoring_failed' : ev.meta.attempts > 1 ? 'ok_after_retry' : 'ok',
+        total: ev.result.score.final_score,
+        na: ev.meta.breakdown.na,
+        critical: ev.result.score.critical_flag,
+        attempts: ev.meta.attempts,
+        issues: ev.meta.issues,
+        seconds: ev.meta.seconds,
+        cost: ev.meta.cost,
+        checks,
+        style: styleIssues(ev),
+        summary: ev.meta.summary,
+      });
+    }
   } catch (err) {
-    const usage = err.details?.usage;
-    Object.assign(item, {
-      status: 'error',
-      error_code: classify(err),
-      error: err.message,
-      attempts: err.details?.attempts,
-      issues: err.details?.issues,
-      cost: usage && usage.length ? estimateCost(usage) : null,
-    });
+    // Сюда попадает только ошибка в самом коде проверок — evaluateConversation исключений не бросает.
+    Object.assign(item, { status: 'error', error_code: classify(err), error: err.message });
   }
   results.push(item);
 
@@ -328,7 +342,7 @@ console.log(`  ${styleHits.length ? WARN : OK} замечаний: ${styleHits.l
 for (const s of styleHits) console.log(`      ${c.gray(`${s.id} ${s.where}`)} «${s.match}»: ${s.text.slice(0, 90)}`);
 
 console.log();
-console.log(c.bold('Проверки расчёта итога (N/A, веса, грубые ошибки)'));
+console.log(c.bold('Формат JSON 1.0 и расчёт итога (N/A, веса, critical_flag)'));
 if (!evaluated.length) {
   console.log(`  ${c.gray('нет успешных оценок для проверки')}`);
 } else {
@@ -345,7 +359,8 @@ if (errors.length) {
   console.log();
   console.log(c.bold(c.red('Ошибки')));
   for (const r of errors) {
-    console.log(`  ${FAIL} ${r.conversation_id} ${c.red(r.error_code)} — ${ERROR_HINT[r.error_code] || 'ошибка API'}`);
+    console.log(`  ${FAIL} ${r.conversation_id} ${c.red(r.error_code)} — ${ERROR_HINT[r.error_code] || 'ошибка API'}` +
+      (r.error_record_valid === undefined ? '' : r.error_record_valid ? c.gray(' · запись status "error" по формату JSON 1.0') : c.red(' · запись об ошибке не по формату')));
     console.log(`      ${c.gray(r.error.replace(/\n/g, '\n      '))}`);
   }
 }
