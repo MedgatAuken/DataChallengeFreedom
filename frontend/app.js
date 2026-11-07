@@ -1568,6 +1568,59 @@
     el.hidden = !open;
   }
 
+  /* ---------- светлая / тёмная тема ---------- */
+
+  const THEME_KEY = 'cqa-theme';
+  const darkQuery = typeof root.matchMedia === 'function' ? root.matchMedia('(prefers-color-scheme: dark)') : null;
+
+  function savedTheme() {
+    try {
+      const t = localStorage.getItem(THEME_KEY);
+      return t === 'dark' || t === 'light' ? t : null;
+    } catch {
+      return null; // хранилище недоступно — следуем системной теме
+    }
+  }
+
+  function applyTheme(theme, { save = false } = {}) {
+    const t = theme === 'dark' ? 'dark' : 'light';
+    $('#cqa-app').dataset.theme = t;
+    const btn = $('#theme-toggle');
+    if (btn) {
+      const label = t === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+      btn.setAttribute('aria-label', label);
+      btn.title = label;
+      btn.setAttribute('aria-pressed', String(t === 'dark'));
+    }
+    if (save) {
+      try {
+        localStorage.setItem(THEME_KEY, t);
+      } catch {
+        /* не запомнится — не страшно */
+      }
+    }
+  }
+
+  /** Тема: выбор пользователя, иначе системная настройка (и её изменения, пока выбор не сделан). */
+  function initTheme() {
+    applyTheme(savedTheme() || (darkQuery && darkQuery.matches ? 'dark' : 'light'));
+    $('#theme-toggle').addEventListener('click', () => {
+      applyTheme($('#cqa-app').dataset.theme === 'dark' ? 'light' : 'dark', { save: true });
+    });
+    if (darkQuery) {
+      const followSystem = () => {
+        if (!savedTheme()) applyTheme(darkQuery.matches ? 'dark' : 'light');
+      };
+      if (typeof darkQuery.addEventListener === 'function') darkQuery.addEventListener('change', followSystem);
+      // Запасной путь: некоторые встроенные браузеры не присылают событие change —
+      // сверяемся с системной темой, когда окно снова получает фокус.
+      root.addEventListener('focus', followSystem);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') followSystem();
+      });
+    }
+  }
+
   /* ---------- режим «Оператор / Проверяющий» ---------- */
 
   function setMode(mode) {
@@ -1862,6 +1915,7 @@
   }
 
   async function init() {
+    initTheme();
     $('#group-id').value = state.groupId;
     $('#group-id').addEventListener('change', (e) => {
       state.groupId = e.target.value.trim() || 'DEV';
