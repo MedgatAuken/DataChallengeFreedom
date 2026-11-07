@@ -2,7 +2,7 @@
 // Тест модуля оценки на одном диалоге из локального набора.
 //
 //   node test_eval.js                 -> p1-ru-001 из data/dev_data.json
-//   node test_eval.js p2-kz-003       -> другой диалог
+//   node test_eval.js p1-kz-001       -> другой диалог
 //   node test_eval.js p1-ru-001 --json -> только итоговый JSON
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';

@@ -11,7 +11,12 @@
 (function (root) {
   'use strict';
 
-  const CONFIG = Object.assign({ apiBase: '/api', groupId: 'DEV' }, root.CQA_CONFIG || {});
+  // Если index.html открыт как файл (file://), обращаемся к локальному серверу напрямую — он разрешает CORS.
+  const openedAsFile = Boolean(root.location && root.location.protocol === 'file:');
+  const CONFIG = Object.assign(
+    { apiBase: openedAsFile ? 'http://localhost:3000/api' : '/api', groupId: 'DEV' },
+    root.CQA_CONFIG || {}
+  );
 
   /* =====================================================================
    * 1. Расчёт итогового балла (чистые функции, без DOM)
