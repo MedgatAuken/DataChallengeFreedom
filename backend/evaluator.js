@@ -198,6 +198,23 @@ function transcriptPayload(record) {
   );
 }
 
+/**
+ * Ошибка оценки с машинно-читаемым кодом:
+ *   INVALID_JSON     — модель вернула текст, который не разбирается как JSON
+ *   RULES_VIOLATION  — JSON разобран, но нарушает правила чек-листа (N/A, шкала, номера реплик)
+ *   REFUSAL          — модель отказалась отвечать (stop_reason = refusal)
+ *   MAX_TOKENS       — ответ обрезан по max_tokens
+ * В details.usage — токены всех сделанных вызовов (они оплачены, даже если оценка не удалась).
+ */
+export class EvaluationError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = 'EvaluationError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
 async function requestOnce(messages, checklist) {
   const response = await getClient().beta.messages.create({
     model: MODEL,
@@ -214,26 +231,16 @@ async function requestOnce(messages, checklist) {
     fallbacks: 'default',
   });
 
-  if (response.stop_reason === 'refusal') {
-    throw new Error(`Модель отказалась оценивать диалог (${response.stop_details?.category ?? 'без категории'})`);
-  }
-  if (response.stop_reason === 'max_tokens') {
-    throw new Error('Ответ модели обрезан по max_tokens — JSON неполный');
-  }
-  const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error('Модель вернула невалидный JSON');
-  }
-  return { response, parsed };
+  return response;
 }
 
 /**
  * Отправляет транскрипт в Claude и возвращает распарсенный JSON-ответ по схеме.
- * Если ответ нарушает правила чек-листа (например, N/A там, где он запрещён), делает одну
- * повторную попытку с перечнем ошибок. Возвращает { result, usage: [...], model }.
+ * - Невалидный JSON — повторяет тот же запрос.
+ * - JSON нарушает правила чек-листа (например, N/A там, где он запрещён) — повторяет запрос
+ *   с перечнем ошибок, чтобы модель исправила оценку.
+ * Повторов не больше maxRepairs. Возвращает { result, usage: [...], model, attempts, issues },
+ * где issues — замечания к неудачным попыткам (для отчёта о стабильности).
  */
 export async function callLLM(record, checklist, { maxRepairs = 1 } = {}) {
   const messages = [
@@ -243,13 +250,37 @@ export async function callLLM(record, checklist, { maxRepairs = 1 } = {}) {
     },
   ];
   const usage = [];
+  const issues = [];
   for (let attempt = 0; ; attempt++) {
-    const { response, parsed } = await requestOnce(messages, checklist);
+    const response = await requestOnce(messages, checklist);
     usage.push({ model: response.model, ...response.usage });
+    const details = { usage, issues, attempts: attempt + 1 };
+
+    if (response.stop_reason === 'refusal') {
+      throw new EvaluationError('REFUSAL', `Модель отказалась оценивать диалог (${response.stop_details?.category ?? 'без категории'})`, details);
+    }
+    if (response.stop_reason === 'max_tokens') {
+      throw new EvaluationError('MAX_TOKENS', 'Ответ модели обрезан по max_tokens — JSON неполный', details);
+    }
+
+    const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      issues.push({ code: 'INVALID_JSON', message: err.message, sample: text.slice(0, 200) });
+      if (attempt >= maxRepairs) {
+        throw new EvaluationError('INVALID_JSON', `Модель вернула невалидный JSON: ${err.message}`, details);
+      }
+      continue; // тот же запрос ещё раз
+    }
+
     const errors = validateLLMResult(parsed, checklist, record.transcript.length);
-    if (!errors.length) return { result: parsed, usage, model: response.model, attempts: attempt + 1 };
+    if (!errors.length) return { result: parsed, usage, model: response.model, attempts: attempt + 1, issues };
+
+    issues.push({ code: 'RULES_VIOLATION', errors });
     if (attempt >= maxRepairs) {
-      throw new Error(`Ответ модели не соответствует чек-листу:\n- ${errors.join('\n- ')}`);
+      throw new EvaluationError('RULES_VIOLATION', `Ответ модели не соответствует чек-листу:\n- ${errors.join('\n- ')}`, details);
     }
     messages.push(
       { role: 'assistant', content: response.content },
@@ -393,13 +424,14 @@ export function estimateCost(usageList, fallbackModel = MODEL) {
 
 export async function evaluateConversation(record, checklist) {
   const started = Date.now();
-  const { result, usage, model, attempts } = await callLLM(record, checklist);
+  const { result, usage, model, attempts, issues } = await callLLM(record, checklist);
   return {
     conversation_id: record.conversation_id,
     checklist_id: checklist.id,
     checklist_version: checklist.version,
     модель: model,
     попыток: attempts,
+    замечания: issues,
     время_сек: round2((Date.now() - started) / 1000, 1),
     оценка_llm: result,
     итог: computeFinalScore(result, checklist),

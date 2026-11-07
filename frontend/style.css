@@ -374,7 +374,32 @@ select.input--sm { padding-right: 30px; background-position: right 10px center; 
 }
 .card__title { font-size: 14px; font-weight: 700; }
 .card__body { padding: 14px 16px; }
-.card__body--scroll { flex: 1; min-height: 0; overflow-y: auto; }
+/* Транскрипт и результат прокручиваются только по вертикали; горизонтальный скролл исключён. */
+.card__body--scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+
+/* Длинные слова (казахские словоформы, составные английские термины) и ссылки переносятся,
+ * а не растягивают карточку. overflow-wrap: anywhere уменьшает и минимальную ширину элемента,
+ * поэтому flex-элементы тоже сжимаются; hyphens: auto расставляет переносы по языку (атрибут lang). */
+.cqa .card__body,
+.cqa .eval-summary,
+.cqa .eval-explain,
+.cqa .eval-quote,
+.cqa .eval-crit__name,
+.cqa .eval-crit__body,
+.cqa .eval-links,
+.cqa .appeal-box,
+.cqa .fragment__msg,
+.cqa .appeal__head,
+.cqa .appeal__comment,
+.cqa .score-head__title,
+.cqa .conv-meta .pill,
+.cqa .empty {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+.cqa .eval-summary, .cqa .eval-explain, .cqa .eval-quote, .cqa .fragment__msg, .cqa .appeal__comment { hyphens: auto; }
+.cqa .eval-crit__name, .cqa .eval-crit__body > * { min-width: 0; max-width: 100%; }
+.cqa .conv-meta .pill { white-space: normal; height: auto; min-height: 24px; }
 
 .legend { display: flex; gap: 10px; flex-wrap: wrap; }
 .legend__item { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
@@ -422,7 +447,7 @@ button.msg__time {
   color: var(--green-600); cursor: pointer;
 }
 button.msg__time:hover { background: var(--green); color: var(--white); }
-.msg__text { white-space: pre-wrap; word-break: break-word; }
+.msg__text { white-space: pre-wrap; overflow-wrap: anywhere; hyphens: auto; }
 
 /* ---------- результат оценки ---------- */
 .score-head { display: flex; align-items: center; gap: 16px; }

@@ -180,6 +180,7 @@
   const SPEAKER = { client: 'Клиент', operator: 'Оператор', bot: 'Бот', system: 'Система' };
   const CHANNEL = { 'agent chat': 'Чат', 'voice call': 'Звонок' };
   const LANG = { RU: 'Русский', KZ: 'Қазақша', EN: 'English' };
+  const LANG_CODE = { RU: 'ru', KZ: 'kk', EN: 'en' };
 
   /* =====================================================================
    * 4. Роутинг по hash: ссылки-доказательства ведут прямо к реплике
@@ -321,7 +322,8 @@
       );
     }
 
-    const transcript = h('div', { class: 'transcript' },
+    // lang — для правильных переносов длинных слов (казахский, английский, русский).
+    const transcript = h('div', { class: 'transcript', lang: LANG_CODE[rec.language] || null },
       rec.transcript.map((m, i) => {
         let time;
         if (t0 != null && isIsoTime(m.timestamp)) {
@@ -546,7 +548,7 @@
       ),
       h('div', { class: 'eval-crit__body' },
         orig.explanation ? h('div', { class: 'eval-explain', ...evidenceTarget(convId, evidence) }, orig.explanation) : null,
-        orig.quote ? h('blockquote', { class: 'eval-quote', ...evidenceTarget(convId, evidence) }, orig.quote) : null,
+        orig.quote ? h('blockquote', { class: 'eval-quote', lang: LANG_CODE[rec.language] || null, ...evidenceTarget(convId, evidence) }, orig.quote) : null,
         links.length || orig.checked_range
           ? h('div', { class: 'eval-links' },
               links.length ? ['Основание: ', ...links] : null,
