@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CQA — оценка качества диалогов</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="style.css">
   <!--
     Для Dynamics 365 (HTML web resource) достаточно переопределить адрес API до загрузки app.js:
@@ -11,101 +14,215 @@
   -->
 </head>
 <body>
-  <!-- Весь интерфейс живёт внутри одного корня — так его проще встроить как HTML-компонент. -->
+  <!-- Всё приложение внутри одного корня — так его проще встроить как HTML-компонент Dynamics 365. -->
   <div id="cqa-app" class="cqa">
-    <header class="cqa-header">
-      <div class="cqa-brand">
-        <span class="cqa-brand__mark">CQA</span>
-        <span class="cqa-brand__title">Conversation Quality Analytics</span>
+
+    <!-- ===== Шапка ===== -->
+    <header class="topbar">
+      <div class="topbar__brand">
+        <span class="logo-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 12.5l5 5L20 6.5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <div class="topbar__titles">
+          <span class="topbar__title">Conversation Quality Analytics</span>
+          <span class="topbar__subtitle">Контроль качества работы операторов</span>
+        </div>
       </div>
-      <nav class="cqa-tabs" role="tablist">
-        <a class="cqa-tab" href="#/conversations" data-view="conversations">Диалоги</a>
-        <a class="cqa-tab" href="#/checklist" data-view="checklist">Чек-лист</a>
-        <a class="cqa-tab" href="#/appeals" data-view="appeals">Апелляции</a>
+
+      <nav class="topbar__nav" aria-label="Разделы">
+        <a class="nav-link" href="#/conversations" data-view="main">Оценка</a>
+        <a class="nav-link" href="#/appeals" data-view="appeals">Апелляции <span id="appeals-count" class="nav-link__count" hidden></span></a>
       </nav>
-      <div class="cqa-dataset">
-        <label for="group-id">Набор</label>
-        <input id="group-id" class="input input--sm" value="DEV" maxlength="64" spellcheck="false">
-        <button id="sync-btn" class="btn btn--sm" type="button" title="Скачать набор из API организаторов и сохранить локально">Обновить из API</button>
+
+      <div class="topbar__dataset">
+        <label class="topbar__label" for="group-id">Набор</label>
+        <input id="group-id" class="input input--dark" value="DEV" maxlength="64" spellcheck="false" aria-label="group_id набора">
+        <button id="sync-btn" class="btn btn--ghost-light" type="button" title="Скачать набор из API организаторов и сохранить локально">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Обновить из API
+        </button>
       </div>
     </header>
 
-    <div id="status" class="cqa-status" role="status" aria-live="polite" hidden></div>
+    <!-- ===== Экран «Оценка»: две зоны ===== -->
+    <main class="cqa-view workspace" data-view="main">
 
-    <!-- Экран 1: список диалогов + карточка -->
-    <main class="cqa-view" data-view="conversations">
-      <aside class="panel conv-list">
-        <div class="conv-list__filters">
-          <input id="f-search" class="input" type="search" placeholder="Поиск по ID или тексту">
-          <div class="row">
-            <select id="f-lang" class="input">
-              <option value="">Все языки</option>
+      <!-- Левая зона: настройка чек-листа -->
+      <section class="zone zone--settings" aria-labelledby="settings-title">
+        <div class="zone__head">
+          <div>
+            <span class="zone__eyebrow">Шаг 1</span>
+            <h2 id="settings-title" class="zone__title">Настройка чек-листа</h2>
+          </div>
+          <span id="cl-dirty" class="pill pill--warn" hidden>Не сохранено</span>
+        </div>
+
+        <div class="settings-meta">
+          <div class="field">
+            <label class="field__label" for="cl-select">Чек-лист</label>
+            <select id="cl-select" class="input"></select>
+          </div>
+          <div class="field">
+            <label class="field__label" for="cl-name">Название</label>
+            <input id="cl-name" class="input" placeholder="Название чек-листа">
+          </div>
+          <div class="weight-meter" id="cl-weight">
+            <div class="weight-meter__row">
+              <span class="field__label">Сумма весов</span>
+              <span class="weight-meter__value" id="cl-weight-value">0 / 100</span>
+            </div>
+            <div class="weight-meter__track"><div class="weight-meter__fill" id="cl-weight-fill"></div></div>
+            <span class="weight-meter__hint" id="cl-weight-hint"></span>
+          </div>
+        </div>
+
+        <div id="cl-criteria" class="criteria-list"></div>
+
+        <div class="zone__footer">
+          <button id="cl-add" class="btn btn--outline" type="button">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+            Критерий
+          </button>
+          <button id="cl-copy" class="btn btn--text" type="button" title="Сохранить как новую версию чек-листа">Новая версия</button>
+          <button id="cl-save" class="btn btn--dark" type="button">Сохранить</button>
+        </div>
+      </section>
+
+      <!-- Правая зона: анализ диалога -->
+      <section class="zone zone--analysis" aria-labelledby="analysis-title">
+        <div class="zone__head">
+          <div>
+            <span class="zone__eyebrow">Шаг 2</span>
+            <h2 id="analysis-title" class="zone__title">Анализ диалога</h2>
+          </div>
+          <span id="conv-count" class="zone__hint"></span>
+        </div>
+
+        <div class="analysis-bar">
+          <div class="field field--grow">
+            <label class="field__label" for="conv-select">Диалог</label>
+            <select id="conv-select" class="input input--lg"></select>
+          </div>
+          <div class="field">
+            <label class="field__label" for="f-lang">Язык</label>
+            <select id="f-lang" class="input input--lg">
+              <option value="">Все</option>
               <option>RU</option><option>KZ</option><option>EN</option>
             </select>
-            <select id="f-channel" class="input">
-              <option value="">Все каналы</option>
+          </div>
+          <div class="field">
+            <label class="field__label" for="f-channel">Канал</label>
+            <select id="f-channel" class="input input--lg">
+              <option value="">Все</option>
               <option value="agent chat">Чат</option>
               <option value="voice call">Звонок</option>
             </select>
           </div>
-          <div id="conv-count" class="muted small"></div>
         </div>
-        <ul id="conv-items" class="conv-list__items"></ul>
-      </aside>
 
-      <section class="panel conv-card" id="conv-card">
-        <div class="empty">Выберите диалог из списка слева</div>
-      </section>
-
-      <section class="panel eval-panel" id="eval-panel">
-        <div class="empty">Здесь появится оценка по чек-листу</div>
-      </section>
-    </main>
-
-    <!-- Экран 2: редактор чек-листа -->
-    <main class="cqa-view" data-view="checklist" hidden>
-      <section class="panel checklist-editor">
-        <div class="toolbar">
-          <select id="cl-select" class="input"></select>
-          <input id="cl-name" class="input input--grow" placeholder="Название чек-листа">
-          <span id="cl-weight-sum" class="badge"></span>
-          <button id="cl-add" class="btn" type="button">+ Критерий</button>
-          <button id="cl-copy" class="btn btn--ghost" type="button" title="Сохранить как новую версию">Копия</button>
-          <button id="cl-save" class="btn btn--primary" type="button">Сохранить</button>
+        <div class="action-row">
+          <div id="conv-meta" class="conv-meta"></div>
+          <button id="eval-btn" class="btn btn--primary btn--xl" type="button" disabled>
+            <svg class="btn__icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="btn__label">Оценить оператора</span>
+          </button>
         </div>
-        <div id="cl-criteria" class="criteria"></div>
+
+        <div class="analysis-grid">
+          <article class="card">
+            <header class="card__head">
+              <h3 class="card__title">Транскрипт</h3>
+              <div class="legend" aria-hidden="true">
+                <span class="legend__item legend__item--client">Клиент</span>
+                <span class="legend__item legend__item--operator">Оператор</span>
+                <span class="legend__item legend__item--bot">Бот</span>
+                <span class="legend__item legend__item--system">Система</span>
+              </div>
+            </header>
+            <div id="conv-card" class="card__body card__body--scroll">
+              <div class="empty">
+                <div class="empty__icon">💬</div>
+                Выберите диалог в списке выше
+              </div>
+            </div>
+          </article>
+
+          <article class="card">
+            <header class="card__head">
+              <h3 class="card__title">Результат оценки</h3>
+            </header>
+            <div id="eval-panel" class="card__body card__body--scroll">
+              <div class="empty">
+                <div class="empty__icon">📋</div>
+                Здесь появятся баллы, обоснования и реплики-доказательства
+              </div>
+            </div>
+          </article>
+        </div>
       </section>
     </main>
 
-    <!-- Экран 3: апелляции -->
-    <main class="cqa-view" data-view="appeals" hidden>
-      <section class="panel">
-        <h2 class="panel__title">Апелляции</h2>
-        <div id="appeals-list"></div>
+    <!-- ===== Экран «Апелляции» ===== -->
+    <main class="cqa-view appeals-view" data-view="appeals" hidden>
+      <section class="zone">
+        <div class="zone__head">
+          <div>
+            <span class="zone__eyebrow">Пересмотр</span>
+            <h2 class="zone__title">Апелляции</h2>
+          </div>
+        </div>
+        <div id="appeals-list" class="appeals-list"></div>
       </section>
     </main>
+
+    <div id="status" class="toast" role="status" aria-live="polite" hidden></div>
   </div>
 
+  <!-- Карточка критерия в левой зоне -->
   <template id="tpl-criterion">
-    <div class="criterion">
-      <div class="criterion__head">
-        <input class="input input--grow" data-field="title" placeholder="Название критерия">
-        <select class="input" data-field="section"></select>
-        <select class="input" data-field="type">
+    <div class="crit">
+      <div class="crit__top">
+        <span class="crit__num"></span>
+        <input class="input crit__title" data-field="title" placeholder="Название критерия" aria-label="Название критерия">
+        <button class="icon-btn" type="button" data-action="remove" title="Удалить критерий" aria-label="Удалить критерий">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="crit__controls">
+        <label class="mini-field">
+          <span class="mini-field__label">Вес</span>
+          <input class="input input--num" type="number" min="0" step="1" data-field="weight">
+        </label>
+        <label class="switch">
+          <input type="checkbox" data-field="na_allowed">
+          <span class="switch__track" aria-hidden="true"></span>
+          <span class="switch__label">N/A</span>
+        </label>
+        <select class="input input--sm" data-field="type" aria-label="Тип ответа">
           <option value="binary">Да / Нет</option>
           <option value="scale">Шкала</option>
-          <option value="critical">Грубая ошибка (без баллов)</option>
+          <option value="critical">Грубая ошибка</option>
         </select>
-        <label class="field-inline">Вес <input class="input input--num" type="number" min="0" step="1" data-field="weight"></label>
-        <label class="field-inline"><input type="checkbox" data-field="na_allowed"> N/A</label>
-        <button class="btn btn--ghost btn--icon" type="button" data-action="remove" title="Удалить критерий">✕</button>
       </div>
-      <textarea class="input" rows="2" data-field="description" placeholder="Когда ставится «Да» / как оценивать"></textarea>
-      <input class="input" data-field="na_condition" placeholder="Условие N/A">
-      <div class="criterion__scale">
-        <div class="muted small">Шкала: одна ступень на строку в формате «балл — описание». Верхняя ступень даёт полный вес.</div>
-        <textarea class="input mono" rows="4" data-field="scale"></textarea>
-      </div>
+      <details class="crit__more">
+        <summary>Описание, условие N/A и шкала</summary>
+        <label class="mini-field mini-field--block">
+          <span class="mini-field__label">Секция</span>
+          <select class="input input--sm" data-field="section"></select>
+        </label>
+        <label class="mini-field mini-field--block">
+          <span class="mini-field__label">Когда «Да» / как оценивать</span>
+          <textarea class="input" rows="3" data-field="description"></textarea>
+        </label>
+        <label class="mini-field mini-field--block" data-role="na-condition">
+          <span class="mini-field__label">Условие N/A</span>
+          <input class="input" data-field="na_condition">
+        </label>
+        <label class="mini-field mini-field--block" data-role="scale">
+          <span class="mini-field__label">Шкала — «балл — описание», по строке на ступень</span>
+          <textarea class="input mono" rows="4" data-field="scale"></textarea>
+        </label>
+      </details>
     </div>
   </template>
 
