@@ -1,0 +1,16 @@
+{
+  "name": "cqa-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Conversation Quality Analytics — локальный сервер и прокси к API организаторов",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "fetch": "node fetch_dataset.js",
+    "fetch:dev": "node fetch_dataset.js DEV"
+  }
+}

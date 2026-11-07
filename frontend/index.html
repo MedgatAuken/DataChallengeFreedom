@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CQA — оценка качества диалогов</title>
+  <link rel="stylesheet" href="style.css">
+  <!--
+    Для Dynamics 365 (HTML web resource) достаточно переопределить адрес API до загрузки app.js:
+    <script>window.CQA_CONFIG = { apiBase: 'https://<ваш-сервер>/api' };</script>
+  -->
+</head>
+<body>
+  <!-- Весь интерфейс живёт внутри одного корня — так его проще встроить как HTML-компонент. -->
+  <div id="cqa-app" class="cqa">
+    <header class="cqa-header">
+      <div class="cqa-brand">
+        <span class="cqa-brand__mark">CQA</span>
+        <span class="cqa-brand__title">Conversation Quality Analytics</span>
+      </div>
+      <nav class="cqa-tabs" role="tablist">
+        <a class="cqa-tab" href="#/conversations" data-view="conversations">Диалоги</a>
+        <a class="cqa-tab" href="#/checklist" data-view="checklist">Чек-лист</a>
+        <a class="cqa-tab" href="#/appeals" data-view="appeals">Апелляции</a>
+      </nav>
+      <div class="cqa-dataset">
+        <label for="group-id">Набор</label>
+        <input id="group-id" class="input input--sm" value="DEV" maxlength="64" spellcheck="false">
+        <button id="sync-btn" class="btn btn--sm" type="button" title="Скачать набор из API организаторов и сохранить локально">Обновить из API</button>
+      </div>
+    </header>
+
+    <div id="status" class="cqa-status" role="status" aria-live="polite" hidden></div>
+
+    <!-- Экран 1: список диалогов + карточка -->
+    <main class="cqa-view" data-view="conversations">
+      <aside class="panel conv-list">
+        <div class="conv-list__filters">
+          <input id="f-search" class="input" type="search" placeholder="Поиск по ID или тексту">
+          <div class="row">
+            <select id="f-lang" class="input">
+              <option value="">Все языки</option>
+              <option>RU</option><option>KZ</option><option>EN</option>
+            </select>
+            <select id="f-channel" class="input">
+              <option value="">Все каналы</option>
+              <option value="agent chat">Чат</option>
+              <option value="voice call">Звонок</option>
+            </select>
+          </div>
+          <div id="conv-count" class="muted small"></div>
+        </div>
+        <ul id="conv-items" class="conv-list__items"></ul>
+      </aside>
+
+      <section class="panel conv-card" id="conv-card">
+        <div class="empty">Выберите диалог из списка слева</div>
+      </section>
+
+      <section class="panel eval-panel" id="eval-panel">
+        <div class="empty">Здесь появится оценка по чек-листу</div>
+      </section>
+    </main>
+
+    <!-- Экран 2: редактор чек-листа -->
+    <main class="cqa-view" data-view="checklist" hidden>
+      <section class="panel checklist-editor">
+        <div class="toolbar">
+          <select id="cl-select" class="input"></select>
+          <input id="cl-name" class="input input--grow" placeholder="Название чек-листа">
+          <span id="cl-weight-sum" class="badge"></span>
+          <button id="cl-add" class="btn" type="button">+ Критерий</button>
+          <button id="cl-copy" class="btn btn--ghost" type="button" title="Сохранить как новую версию">Копия</button>
+          <button id="cl-save" class="btn btn--primary" type="button">Сохранить</button>
+        </div>
+        <div id="cl-criteria" class="criteria"></div>
+      </section>
+    </main>
+
+    <!-- Экран 3: апелляции -->
+    <main class="cqa-view" data-view="appeals" hidden>
+      <section class="panel">
+        <h2 class="panel__title">Апелляции</h2>
+        <div id="appeals-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <template id="tpl-criterion">
+    <div class="criterion">
+      <div class="criterion__head">
+        <input class="input input--grow" data-field="title" placeholder="Название критерия">
+        <select class="input" data-field="section"></select>
+        <select class="input" data-field="type">
+          <option value="binary">Да / Нет</option>
+          <option value="scale">Шкала</option>
+          <option value="critical">Грубая ошибка (без баллов)</option>
+        </select>
+        <label class="field-inline">Вес <input class="input input--num" type="number" min="0" step="1" data-field="weight"></label>
+        <label class="field-inline"><input type="checkbox" data-field="na_allowed"> N/A</label>
+        <button class="btn btn--ghost btn--icon" type="button" data-action="remove" title="Удалить критерий">✕</button>
+      </div>
+      <textarea class="input" rows="2" data-field="description" placeholder="Когда ставится «Да» / как оценивать"></textarea>
+      <input class="input" data-field="na_condition" placeholder="Условие N/A">
+      <div class="criterion__scale">
+        <div class="muted small">Шкала: одна ступень на строку в формате «балл — описание». Верхняя ступень даёт полный вес.</div>
+        <textarea class="input mono" rows="4" data-field="scale"></textarea>
+      </div>
+    </div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
