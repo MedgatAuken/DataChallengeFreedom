@@ -658,6 +658,7 @@
     clearTimeout(skeletonTimer);
     renderConvSelect();
     renderConvMeta();
+    renderPlayer(); // плеер — только для звонков; для чата скрывается
     renderTranscript();
     renderEvalPanel();
   }
@@ -675,7 +676,7 @@
   }
 
   /* =====================================================================
-   * 6. Правая зона: транскрипт + запись звонка
+   * 6. Правая зона: запись звонка + транскрипт
    * ===================================================================== */
 
   const isIsoTime = (t) => /^\d{4}-\d{2}-\d{2}T/.test(t);
@@ -684,26 +685,263 @@
     return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   }
 
+  const isCall = (rec) => Boolean(rec && rec.channel === 'voice call');
+
+  /**
+   * Смещение каждой реплики от начала разговора, в секундах (null — время не распознано).
+   * У звонков timestamp — ISO 8601 с часовым поясом; начало — время первой реплики транскрипта.
+   */
+  function turnOffsets(rec) {
+    const first = rec.transcript.find((m) => isIsoTime(m.timestamp));
+    const t0 = first ? Date.parse(first.timestamp) : null;
+    return rec.transcript.map((m) => (t0 != null && isIsoTime(m.timestamp) ? Math.max(0, (Date.parse(m.timestamp) - t0) / 1000) : null));
+  }
+
+  /* ---------- плеер записи звонка ---------- */
+
+  const SPEEDS = [1, 1.25, 1.5, 2];
+  const WAVE_BARS = 96;
+  const player = {
+    convId: null,
+    offsets: [],      // смещение каждой реплики, с
+    span: 0,          // длительность по транскрипту, с (пока запись не загружена или её нет)
+    available: false, // есть ли audio_url
+    pendingSeek: null,
+    virtualTime: 0,   // позиция на шкале, если записи нет
+    playingTurn: null,
+    speed: 1,
+  };
+
+  const audioEl = () => $('#call-audio');
+  const audioDuration = () => {
+    const d = audioEl().duration;
+    return Number.isFinite(d) && d > 0 ? d : null;
+  };
+  const timelineLength = () => audioDuration() || Math.max(player.span, 1);
+
+  /**
+   * «Звуковая волна» по транскрипту: высота столбика — сколько сказано в этот момент
+   * (длина реплики, распределённая до следующей реплики), цвет — кто говорил.
+   */
+  function buildWave(rec, offsets, span) {
+    const buckets = Array.from({ length: WAVE_BARS }, () => ({ amount: 0, by: {} }));
+    rec.transcript.forEach((m, i) => {
+      const start = offsets[i];
+      if (start == null || m.speaker === 'system') return;
+      const next = offsets.slice(i + 1).find((x) => x != null && x > start);
+      const end = Math.min(next ?? start + 4, start + 30); // реплика «звучит» до следующей, но не дольше 30 с
+      const b0 = Math.min(WAVE_BARS - 1, Math.floor((start / span) * WAVE_BARS));
+      const b1 = Math.max(b0, Math.min(WAVE_BARS - 1, Math.floor((end / span) * WAVE_BARS)));
+      const per = (m.text || '').length / (b1 - b0 + 1);
+      for (let b = b0; b <= b1; b++) {
+        buckets[b].amount += per;
+        buckets[b].by[m.speaker] = (buckets[b].by[m.speaker] || 0) + per;
+      }
+    });
+    const max = Math.max(1, ...buckets.map((b) => b.amount));
+    return buckets.map((b) => ({
+      height: b.amount ? 22 + (b.amount / max) * 78 : 10,
+      who: Object.entries(b.by).sort((x, y) => y[1] - x[1])[0]?.[0] || 'silence',
+    }));
+  }
+
+  function drawWave(span) {
+    const bars = buildWave(state.current, player.offsets, span);
+    const row = () => h('div', { class: 'wave__bars' },
+      bars.map((b) => h('span', { class: `wave__bar wave__bar--${b.who}`, style: `height:${b.height.toFixed(1)}%` })));
+    $('#player-wave').replaceChildren(
+      row(),
+      h('div', { class: 'wave__played', 'aria-hidden': 'true' }, row()),
+      h('span', { class: 'wave__head', 'aria-hidden': 'true' })
+    );
+  }
+
+  function setPlayingIcon(playing) {
+    const btn = $('#player-toggle');
+    btn.classList.toggle('is-playing', playing);
+    btn.setAttribute('aria-label', playing ? 'Пауза' : 'Воспроизвести запись');
+  }
+
+  function updatePlayerUI(t) {
+    const len = timelineLength();
+    const pct = Math.min(100, Math.max(0, (t / len) * 100));
+    const wave = $('#player-wave');
+    wave.style.setProperty('--progress', `${pct}%`);
+    wave.setAttribute('aria-valuemax', String(Math.round(len)));
+    wave.setAttribute('aria-valuenow', String(Math.round(t)));
+    wave.setAttribute('aria-valuetext', `${fmtOffset(t)} из ${fmtOffset(len)}`);
+    $('#player-current').textContent = fmtOffset(t);
+    $('#player-duration').textContent = audioDuration() ? fmtOffset(audioDuration()) : `≈${fmtOffset(player.span)}`;
+    markPlayingTurn(t);
+  }
+
+  /** Во время прослушивания отмечаем в транскрипте реплику, которая сейчас звучит. */
+  function markPlayingTurn(t) {
+    const audio = audioEl();
+    const active = player.available ? !audio.paused || t > 0 : t > 0;
+    let turn = null;
+    if (active) player.offsets.forEach((o, i) => { if (o != null && o <= t + 0.25) turn = i + 1; });
+    if (turn === player.playingTurn) return;
+    $$('.msg.is-playing').forEach((m) => m.classList.remove('is-playing'));
+    player.playingTurn = turn;
+    if (turn) {
+      const el = document.getElementById(`msg-${turn}`);
+      if (el) el.classList.add('is-playing');
+    }
+  }
+
+  /**
+   * Показывает плеер для звонка (channel = "voice call") и скрывает для чата.
+   * Источник — audio_url. Ссылка из audio_url открывает HTML-страницу плеера организаторов,
+   * поэтому <audio> получает её через сервер (/api/audio/:id): сервер достаёт из страницы mp3.
+   * Если audio_url = null — вместо записи только шкала активности речи по транскрипту.
+   */
+  function renderPlayer() {
+    const rec = state.current;
+    const box = $('#call-player');
+    const audio = audioEl();
+    if (!isCall(rec)) {
+      box.hidden = true;
+      if (player.convId) {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+      }
+      Object.assign(player, { convId: null, offsets: [], span: 0, available: false, pendingSeek: null, virtualTime: 0, playingTurn: null });
+      return;
+    }
+    if (player.convId === rec.conversation_id) return; // тот же звонок — позицию не сбрасываем
+
+    player.convId = rec.conversation_id;
+    player.offsets = turnOffsets(rec);
+    const known = player.offsets.filter((x) => x != null);
+    player.span = (known.length ? Math.max(...known) : 0) + 5;
+    player.available = Boolean(rec.audio_url);
+    player.pendingSeek = null;
+    player.virtualTime = 0;
+    player.playingTurn = null;
+
+    box.hidden = false;
+    box.classList.toggle('is-unavailable', !player.available);
+    audio.pause();
+    if (player.available) {
+      audio.src = api.audioUrl(state.groupId, rec.conversation_id);
+      audio.load();
+      audio.playbackRate = player.speed;
+    } else {
+      audio.removeAttribute('src');
+      audio.load();
+    }
+    const ext = $('#player-external');
+    ext.hidden = !rec.audio_url;
+    if (rec.audio_url) ext.href = rec.audio_url;
+    $('#player-toggle').disabled = !player.available;
+    $('#player-speed').disabled = !player.available;
+    $('#player-status').textContent = player.available
+      ? 'Загрузка записи…'
+      : 'Аудиозапись недоступна (audio_url = null) — шкала показывает активность речи по транскрипту.';
+    setPlayingIcon(false);
+    drawWave(player.span);
+    updatePlayerUI(0);
+  }
+
+  /**
+   * Перемотка записи звонка на `seconds` от начала разговора.
+   * Если запись ещё не загрузилась — перемотка выполнится, как только станут известны метаданные.
+   * Без записи (audio_url = null) двигается только отметка на шкале. Для чатов ничего не делает.
+   */
+  function seekToTime(seconds, { play = false } = {}) {
+    if (!isCall(state.current) || !Number.isFinite(seconds)) return false;
+    const audio = audioEl();
+    const t = Math.max(0, Math.min(seconds, timelineLength()));
+    if (player.available) {
+      if (audio.readyState >= 1) audio.currentTime = t; // HAVE_METADATA
+      else player.pendingSeek = t;
+      if (play) {
+        audio.play().catch((err) => {
+          if (err && err.name !== 'AbortError') toast({ type: 'warning', title: 'Не удалось воспроизвести запись', message: 'Откройте плеер организаторов по кнопке ↗.' });
+        });
+      }
+    } else {
+      player.virtualTime = t;
+    }
+    updatePlayerUI(t);
+    const box = $('#call-player');
+    box.classList.remove('is-seeking');
+    void box.offsetWidth;
+    box.classList.add('is-seeking');
+    return true;
+  }
+
+  /** Перемотка к реплике по её номеру turn (с 1, как в evidence_turns). */
+  function seekToTurn(turn, opts) {
+    const offset = player.offsets[turn - 1];
+    return offset == null ? false : seekToTime(offset, opts);
+  }
+
+  function bindPlayer() {
+    const audio = audioEl();
+    const box = $('#call-player');
+    const wave = $('#player-wave');
+
+    audio.addEventListener('loadedmetadata', () => {
+      $('#player-status').textContent = '';
+      // Шкалу строим по реальной длительности записи, если она известна.
+      if (audioDuration() && Math.abs(audioDuration() - player.span) > 2) drawWave(audioDuration());
+      if (player.pendingSeek != null) {
+        audio.currentTime = player.pendingSeek;
+        player.pendingSeek = null;
+      }
+      updatePlayerUI(audio.currentTime);
+    });
+    audio.addEventListener('timeupdate', () => updatePlayerUI(audio.currentTime));
+    audio.addEventListener('play', () => setPlayingIcon(true));
+    audio.addEventListener('pause', () => setPlayingIcon(false));
+    audio.addEventListener('ended', () => setPlayingIcon(false));
+    audio.addEventListener('error', () => {
+      if (!player.convId || !audio.getAttribute('src')) return;
+      box.classList.add('is-unavailable');
+      $('#player-toggle').disabled = true;
+      $('#player-status').textContent = 'Запись не загрузилась — шкала работает по транскрипту. Можно открыть плеер организаторов (↗).';
+      player.available = false;
+    });
+
+    $('#player-toggle').addEventListener('click', () => {
+      if (!player.available) return;
+      if (audio.paused) seekToTime(audio.currentTime, { play: true });
+      else audio.pause();
+    });
+    $('#player-speed').addEventListener('click', () => {
+      player.speed = SPEEDS[(SPEEDS.indexOf(player.speed) + 1) % SPEEDS.length];
+      audio.playbackRate = player.speed;
+      $('#player-speed').textContent = `${player.speed}×`;
+    });
+
+    const currentTime = () => (player.available ? audio.currentTime : player.virtualTime);
+    wave.addEventListener('click', (e) => {
+      const rect = wave.getBoundingClientRect();
+      const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      seekToTime(pct * timelineLength(), { play: player.available && !audio.paused });
+    });
+    wave.addEventListener('keydown', (e) => {
+      const step = { ArrowLeft: -5, ArrowRight: 5, PageDown: -30, PageUp: 30 }[e.key];
+      if (step) seekToTime(currentTime() + step, { play: player.available && !audio.paused });
+      else if (e.key === 'Home') seekToTime(0);
+      else if (e.key === 'End') seekToTime(timelineLength());
+      else if (e.key === ' ' || e.key === 'Enter') $('#player-toggle').click();
+      else return;
+      e.preventDefault();
+    });
+  }
+
+  /* ---------- транскрипт ---------- */
+
   function renderTranscript() {
     const rec = state.current;
     const box = $('#conv-card');
-    const isCall = Boolean(rec.audio_url);
-
-    // Для звонков (ISO 8601) считаем смещение от первой реплики — по нему перематываем запись.
+    // Для звонков время реплики — смещение от начала разговора; по нему перематывается запись.
     // Исходная метка сохраняется и показывается во всплывающей подсказке.
-    const t0 = isCall && isIsoTime(rec.transcript[0]?.timestamp) ? Date.parse(rec.transcript[0].timestamp) : null;
-    let audio = null;
-    let audioBox = null;
-    if (isCall) {
-      audio = h('audio', { controls: true, preload: 'none', src: api.audioUrl(state.groupId, rec.conversation_id) });
-      audioBox = h('div', { class: 'audio-box' },
-        audio,
-        h('div', { class: 'small muted' },
-          'Нажмите на время реплики, чтобы перейти к фрагменту записи. ',
-          h('a', { href: rec.audio_url, target: '_blank', rel: 'noopener' }, 'Плеер организаторов ↗')
-        )
-      );
-    }
+    const offsets = isCall(rec) ? turnOffsets(rec) : [];
 
     // lang — для правильных переносов длинных слов (казахский, английский, русский).
     const transcript = h('div', { class: 'transcript', lang: LANG_CODE[rec.language] || null },
@@ -711,12 +949,11 @@
         // Номер реплики (turn) — с 1 по всему транскрипту, как в формате JSON 1.0 и в обоснованиях модели.
         const turn = i + 1;
         let time;
-        if (t0 != null && isIsoTime(m.timestamp)) {
-          const offset = (Date.parse(m.timestamp) - t0) / 1000;
+        if (offsets[i] != null) {
           time = h('button', {
-            class: 'msg__time', type: 'button', title: `${m.timestamp} — перейти к фрагменту записи`,
-            onclick: () => { audio.currentTime = offset; audio.play().catch(() => {}); },
-          }, `▶ ${fmtOffset(offset)}`);
+            class: 'msg__time', type: 'button', title: `${m.timestamp} — перейти к этому моменту записи`,
+            onclick: () => seekToTurn(turn, { play: true }),
+          }, `▶ ${fmtOffset(offsets[i])}`);
         } else {
           time = h('span', { class: 'msg__time', title: m.timestamp }, m.timestamp);
         }
@@ -730,17 +967,24 @@
       })
     );
 
-    box.replaceChildren(...[audioBox, transcript].filter(Boolean));
+    box.replaceChildren(transcript);
     box.scrollTop = 0;
+    player.playingTurn = null; // отметка «звучит сейчас» восстановится при следующем timeupdate
   }
 
-  function highlightMessage(idx) {
+  /**
+   * Подсветка реплики по номеру turn (с 1) — из ссылки-доказательства, обоснования или адреса.
+   * Для звонка запись дополнительно перематывается к этой реплике (воспроизведение не запускается,
+   * но если запись уже играет — продолжит с нового места).
+   */
+  function highlightMessage(turn) {
     $$('.msg.is-highlight').forEach((m) => m.classList.remove('is-highlight'));
-    const el = document.getElementById(`msg-${idx}`);
+    const el = document.getElementById(`msg-${turn}`);
     if (!el) return;
     void el.offsetWidth; // перезапуск анимации при повторном клике
     el.classList.add('is-highlight');
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (isCall(state.current)) seekToTurn(turn, { play: !audioEl().paused });
   }
 
   /* =====================================================================
@@ -1622,6 +1866,7 @@
     $('#group-id').addEventListener('change', (e) => {
       state.groupId = e.target.value.trim() || 'DEV';
       state.current = null;
+      renderPlayer(); // скрыть плеер и остановить запись
       $('#conv-meta').replaceChildren();
       $('#conv-card').replaceChildren(emptyState('💬', 'Выберите диалог в списке выше'));
       $('#eval-panel').replaceChildren(emptyState('📋', 'Здесь появятся баллы, обоснования и реплики-доказательства'));
@@ -1635,6 +1880,7 @@
     ['#f-lang', '#f-channel'].forEach((s) => $(s).addEventListener('change', renderConvSelect));
     $('#eval-btn').addEventListener('click', runEvaluation);
     $$('.mode-switch__btn').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+    bindPlayer();
     bindChecklistToolbar();
     root.addEventListener('beforeunload', (e) => {
       if (state.dirty) e.preventDefault();
@@ -1711,6 +1957,7 @@
   renderTranscript = guard('транскрипт', renderTranscript, () =>
     $('#conv-card').replaceChildren(errorState('Транскрипт не удалось показать', 'Данные диалога неполные. Выберите диалог ещё раз.')));
   renderConvMeta = guard('карточку диалога', renderConvMeta, () => $('#conv-meta').replaceChildren());
+  renderPlayer = guard('плеер записи', renderPlayer, () => ($('#call-player').hidden = true));
   renderConvSelect = guard('список диалогов', renderConvSelect);
   renderDashboard = guard('аналитику', renderDashboard, () =>
     $('#kpi-bar').replaceChildren(h('div', { class: 'kpi kpi--empty' }, h('div', { class: 'kpi__sub' }, 'Аналитика временно недоступна.'))));
@@ -1735,7 +1982,7 @@
   }
 
   // Публичное API модуля (удобно для отладки в консоли и будущей интеграции).
-  root.CQA = { config: CONFIG, state, api, computeScore, finalAnswers, computeDashboard, toast, NA };
+  root.CQA = { config: CONFIG, state, api, computeScore, finalAnswers, computeDashboard, toast, seekToTime, seekToTurn, player, NA };
 
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

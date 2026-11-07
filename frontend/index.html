@@ -144,6 +144,29 @@
           </button>
         </div>
 
+        <!-- Плеер записи звонка: показывается только для channel = "voice call" -->
+        <section id="call-player" class="call-player" aria-label="Запись звонка" hidden>
+          <audio id="call-audio" preload="metadata"></audio>
+          <button id="player-toggle" class="player__btn" type="button" aria-label="Воспроизвести запись">
+            <svg class="player__icon player__icon--play" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>
+            <svg class="player__icon player__icon--pause" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" fill="currentColor"/></svg>
+          </button>
+          <div class="player__info">
+            <div class="player__title">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 17v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+              Запись звонка
+            </div>
+            <div class="player__time"><span id="player-current">00:00</span> / <span id="player-duration">--:--</span></div>
+          </div>
+          <div id="player-wave" class="player__wave" role="slider" tabindex="0" aria-label="Позиция в записи"
+               aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" title="Нажмите, чтобы перейти к моменту записи"></div>
+          <div class="player__side">
+            <button id="player-speed" class="player__chip" type="button" title="Скорость воспроизведения">1×</button>
+            <a id="player-external" class="player__chip player__chip--link" target="_blank" rel="noopener" title="Открыть плеер организаторов">↗</a>
+          </div>
+          <div id="player-status" class="player__status" role="status" aria-live="polite"></div>
+        </section>
+
         <div class="analysis-grid">
           <article class="card">
             <header class="card__head">

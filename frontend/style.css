@@ -466,15 +466,99 @@ select.input--sm { padding-right: 30px; background-position: right 10px center; 
 .legend__item--bot::before { background: var(--c-bot); }
 .legend__item--system::before { background: var(--c-system); }
 
-/* ---------- транскрипт ---------- */
-.audio-box {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 10px 12px; margin-bottom: 12px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-2); border: 1px solid var(--line);
+/* ---------- плеер записи звонка ---------- */
+.call-player {
+  --c-operator-bar: var(--green);
+  --c-client-bar: #5b7db8;
+  --c-bot-bar: #8a7fb8;
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-areas: "btn info wave side" "status status status status";
+  align-items: center; column-gap: 14px;
+  margin: 14px 20px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: linear-gradient(180deg, var(--white), var(--surface-2));
+  box-shadow: var(--shadow-sm);
 }
-.audio-box audio { width: 100%; height: 36px; }
+.call-player audio { display: none; } /* управление — свои кнопки */
+.call-player.is-seeking .wave__head { animation: cqa-seek .5s ease-out; }
+@keyframes cqa-seek { 0% { box-shadow: 0 0 0 6px rgba(18, 161, 80, .35); } 100% { box-shadow: 0 0 0 0 rgba(18, 161, 80, 0); } }
 
+.player__btn {
+  grid-area: btn;
+  width: 42px; height: 42px; flex: none;
+  display: grid; place-items: center;
+  border: 0; border-radius: 50%;
+  background: var(--green); color: var(--white); cursor: pointer;
+  box-shadow: 0 4px 12px rgba(18, 161, 80, .3);
+  transition: background .15s, transform .05s;
+}
+.player__btn:hover:not(:disabled) { background: var(--green-600); }
+.player__btn:active:not(:disabled) { transform: scale(.96); }
+.player__btn:focus-visible { outline: none; box-shadow: var(--ring); }
+.player__btn:disabled { background: var(--line-strong); box-shadow: none; cursor: not-allowed; }
+.player__icon--pause { display: none; }
+.player__btn.is-playing .player__icon--play { display: none; }
+.player__btn.is-playing .player__icon--pause { display: block; }
+.player__icon--play { margin-left: 2px; }
+
+.player__info { grid-area: info; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.player__title { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+.player__time { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--ink); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.player__wave {
+  --progress: 0%;
+  grid-area: wave;
+  position: relative; height: 40px; min-width: 0;
+  cursor: pointer; border-radius: 6px;
+}
+.player__wave:focus-visible { outline: none; box-shadow: var(--ring); }
+.wave__bars {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; gap: 2px;
+}
+.wave__bar {
+  flex: 1 1 0; min-width: 1px; border-radius: 2px;
+  background: var(--line-strong); opacity: .55;
+}
+.wave__bar--operator { background: var(--c-operator-bar); }
+.wave__bar--client { background: var(--c-client-bar); }
+.wave__bar--bot { background: var(--c-bot-bar); }
+.wave__bar--silence { background: var(--line); opacity: 1; }
+/* Прослушанная часть — тот же ряд столбиков поверх, видимый только слева от отметки */
+.wave__played { position: absolute; inset: 0; pointer-events: none; clip-path: inset(0 calc(100% - var(--progress)) 0 0); }
+.wave__played .wave__bar { opacity: 1; }
+.wave__head {
+  position: absolute; top: -3px; bottom: -3px; left: var(--progress);
+  width: 2px; margin-left: -1px; border-radius: 2px;
+  background: var(--ink); pointer-events: none;
+}
+.player__wave:hover .wave__bar { opacity: .75; }
+.player__wave:hover .wave__played .wave__bar { opacity: 1; }
+
+.player__side { grid-area: side; display: flex; gap: 6px; }
+.player__chip {
+  font: inherit; font-size: 12px; font-weight: 700;
+  min-width: 38px; height: 30px; padding: 0 9px;
+  display: inline-grid; place-items: center;
+  border: 1px solid var(--line-strong); border-radius: 15px;
+  background: var(--white); color: var(--ink-2); cursor: pointer; text-decoration: none;
+}
+.player__chip:hover:not(:disabled) { border-color: var(--green); color: var(--green-700); }
+.player__chip:disabled { opacity: .5; cursor: not-allowed; }
+.player__chip[hidden] { display: none; }
+
+.player__status { grid-area: status; font-size: 12px; color: var(--muted); }
+.player__status:empty { display: none; }
+.player__status:not(:empty) { margin-top: 6px; }
+
+/* Записи нет (audio_url = null) — шкала по транскрипту, приглушённо */
+.call-player.is-unavailable { background: var(--surface-2); border-style: dashed; }
+.call-player.is-unavailable .wave__bar { opacity: .35; }
+.call-player.is-unavailable .wave__played .wave__bar { opacity: .7; }
+
+/* ---------- транскрипт ---------- */
 .transcript { display: flex; flex-direction: column; gap: 8px; }
 .msg {
   max-width: 88%;
@@ -492,6 +576,14 @@ select.input--sm { padding-right: 30px; background-position: right 10px center; 
   color: var(--muted); font-size: 12px; text-align: center;
 }
 .msg.is-highlight { box-shadow: 0 0 0 2px var(--green), 0 4px 14px rgba(18,161,80,.18); }
+/* Реплика, которая сейчас звучит в записи */
+.msg.is-playing { position: relative; }
+.msg.is-playing::before {
+  content: "▶"; position: absolute; top: 8px; left: -16px;
+  font-size: 10px; color: var(--green);
+}
+.msg--operator.is-playing::before { left: auto; right: -16px; content: "◀"; }
+.msg.is-playing:not(.is-highlight) { box-shadow: 0 0 0 1px var(--green-100), 0 2px 10px rgba(18, 161, 80, .12); }
 .msg__meta { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; font-size: 11px; color: var(--muted); }
 .msg--operator .msg__meta { justify-content: flex-end; }
 .msg--system .msg__meta { justify-content: center; }
@@ -783,6 +875,12 @@ button.msg__time:hover { background: var(--green); color: var(--white); }
   .zone__head, .settings-meta, .criteria-list, .zone__footer, .action-row, .appeals-list { padding-left: 14px; padding-right: 14px; }
   .analysis-bar { grid-template-columns: 1fr 1fr; padding: 14px 14px 0; }
   .kpi-bar { grid-template-columns: minmax(0, 1fr); padding: 12px 14px 0; gap: 8px; }
+  .call-player {
+    margin: 12px 14px 0;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "btn info side" "wave wave wave" "status status status";
+    row-gap: 10px;
+  }
   .toast-stack { right: 16px; bottom: 16px; }
   .analysis-bar .field--grow { grid-column: 1 / -1; }
   .analysis-grid { padding: 12px 14px 14px; }
