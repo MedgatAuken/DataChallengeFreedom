@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>room-801 · CQA — Conversation Quality Analytics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  @page { size: 1920px 1080px; margin: 0; }
+  :root {
+    --ink: #1e2226; --ink-2: #2b3036; --muted: #5d666d; --muted-2: #8b949b;
+    --line: #e3e7e5; --bg: #f3f5f4; --card: #ffffff; --surface-2: #f7f8f8;
+    --green: #12a150; --green-600: #0e8a44; --green-700: #0b6f37; --green-50: #eaf7ef; --green-100: #d3efdd;
+    --amber: #b66a00; --amber-50: #fff4e0; --red: #c4321f; --red-50: #fdecea;
+    --chrome: #1e2226;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #d9dedb; }
+  body { font-family: "Inter", -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+  .slide {
+    width: 1920px; height: 1080px; position: relative; overflow: hidden;
+    background: var(--bg); page-break-after: always; break-after: page;
+    padding: 84px 104px 72px;
+    display: flex; flex-direction: column;
+  }
+  .slide:last-child { page-break-after: auto; break-after: auto; }
+  /* шапка слайда */
+  .kicker { font-size: 22px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--green); margin-bottom: 14px; }
+  h1 { font-size: 64px; line-height: 1.08; letter-spacing: -.025em; margin: 0; font-weight: 800; }
+  h2 { font-size: 30px; font-weight: 700; margin: 0 0 12px; letter-spacing: -.01em; }
+  .lead { font-size: 30px; line-height: 1.45; color: var(--muted); margin: 22px 0 0; max-width: 1500px; }
+  .footer {
+    position: absolute; left: 104px; right: 104px; bottom: 34px;
+    display: flex; justify-content: space-between; font-size: 18px; color: var(--muted-2); font-weight: 500;
+  }
+  .footer b { color: var(--ink-2); font-weight: 700; }
+  .body { flex: 1; min-height: 0; margin-top: 48px; display: flex; gap: 56px; }
+  .col { display: flex; flex-direction: column; gap: 22px; min-width: 0; }
+  /* элементы */
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 30px 34px; box-shadow: 0 1px 3px rgba(20,28,24,.05), 0 10px 30px rgba(20,28,24,.05); }
+  .card p { margin: 0; font-size: 24px; line-height: 1.5; color: var(--muted); }
+  .shot { border-radius: 18px; border: 1px solid var(--line); box-shadow: 0 14px 44px rgba(20,28,24,.16); background: #fff; display: block; }
+  .bullets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 22px; }
+  .bullets li { position: relative; padding-left: 44px; font-size: 27px; line-height: 1.42; color: var(--ink-2); }
+  .bullets li::before { content: ""; position: absolute; left: 0; top: 9px; width: 24px; height: 24px; border-radius: 7px; background: var(--green-50); box-shadow: inset 0 0 0 2px var(--green); }
+  .bullets li b { color: var(--ink); }
+  .num { display: inline-grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: var(--green); color: #fff; font-weight: 800; font-size: 22px; flex: none; }
+  .pill { display: inline-flex; align-items: center; white-space: nowrap; height: 38px; padding: 0 16px; border-radius: 19px; font-size: 20px; font-weight: 700; background: var(--surface-2); color: var(--muted); }
+  .pill--ok { background: var(--green-50); color: var(--green-700); }
+  .pill--bad { background: var(--red-50); color: var(--red); }
+  .pill--warn { background: var(--amber-50); color: var(--amber); }
+  .pill--dark { background: var(--ink); color: #fff; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; }
+  .big { font-size: 80px; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
+  .green { color: var(--green-600); }
+  .red { color: var(--red); }
+  .muted { color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: 25px; }
+  th { text-align: left; font-size: 18px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 700; padding: 0 18px 14px; border-bottom: 2px solid var(--line); }
+  td { padding: 18px; border-bottom: 1px solid var(--line); }
+  td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.total td { font-weight: 800; border-bottom: 0; }
+  .callout { position: absolute; display: flex; align-items: center; gap: 12px; font-size: 21px; font-weight: 700; color: #fff; background: var(--ink); padding: 10px 18px 10px 10px; border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+  .callout .num { width: 34px; height: 34px; font-size: 19px; border-radius: 10px; }
+
+  /* ---------- 1. Титул ---------- */
+  .title { background: var(--chrome); color: #fff; padding: 0; flex-direction: row; }
+  .title .left { width: 860px; padding: 96px 0 72px 104px; display: flex; flex-direction: column; }
+  .title .mark { width: 76px; height: 76px; border-radius: 20px; background: var(--green); display: grid; place-items: center; }
+  .title h1 { font-size: 76px; margin-top: 40px; }
+  .title .sub { font-size: 28px; color: #b8c2c9; margin-top: 22px; line-height: 1.45; }
+  .title .team { margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+  .title .team .t1 { font-size: 22px; color: #8b949b; letter-spacing: .1em; text-transform: uppercase; font-weight: 700; }
+  .title .team .t2 { font-size: 46px; font-weight: 800; letter-spacing: -.01em; }
+  .title .team .t3 { font-size: 24px; color: #b8c2c9; }
+  .title .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 44px; }
+  .title .stat { background: #2b3036; border: 1px solid #3d444b; border-radius: 18px; padding: 18px 18px; }
+  .title .stat .v { font-size: 33px; font-weight: 800; letter-spacing: -.02em; color: #b9f0cd; white-space: nowrap; }
+  .title .stat .l { font-size: 17px; color: #9aa4ab; margin-top: 4px; line-height: 1.3; }
+  .title .right { flex: 1; position: relative; }
+  .title .right img { position: absolute; left: 30px; top: 120px; width: 1180px; border-radius: 22px; box-shadow: 0 30px 90px rgba(0,0,0,.55); border: 1px solid #3d444b; }
+
+  /* ---------- архитектура ---------- */
+  .arch { position: relative; flex: 1; }
+  .node { position: absolute; background: var(--card); border: 2px solid var(--line); border-radius: 22px; padding: 24px 28px; box-shadow: 0 8px 26px rgba(20,28,24,.07); }
+  .node h3 { margin: 0 0 8px; font-size: 27px; font-weight: 800; }
+  .node .tag { font-size: 17px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--green); margin-bottom: 8px; }
+  .node ul { margin: 6px 0 0; padding-left: 22px; font-size: 21px; line-height: 1.55; color: var(--muted); }
+  .node.accent { border-color: var(--green); }
+  .node.dark { background: var(--chrome); border-color: var(--chrome); color: #fff; }
+  .node.dark ul { color: #b8c2c9; }
+  .node.dark .tag { color: #8fe0ae; }
+  svg.wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .wire-label { position: absolute; font-size: 18px; font-weight: 700; color: var(--green-700); background: var(--green-50); padding: 5px 12px; border-radius: 10px; }
+
+  /* код */
+  pre.code { margin: 0; background: #1e2226; color: #dfe5e9; border-radius: 18px; padding: 26px 30px; font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 19px; line-height: 1.6; white-space: pre; overflow: hidden; }
+  .k { color: #8fe0ae; } .s { color: #f3d28b; } .n { color: #9ec5ff; } .c { color: #7f8a91; }
+
+  .step { display: flex; gap: 20px; align-items: flex-start; }
+  .step .txt { font-size: 26px; line-height: 1.45; color: var(--ink-2); }
+  .step .txt small { display: block; font-size: 21px; color: var(--muted); margin-top: 4px; }
+  .crop { overflow: hidden; border-radius: 18px; border: 1px solid var(--line); box-shadow: 0 14px 44px rgba(20,28,24,.16); background: #fff; position: relative; }
+  .crop img { display: block; position: absolute; }
+  .arrow-big { font-size: 64px; color: var(--green); font-weight: 800; align-self: center; }
+</style>
+</head>
+<body>
+
+<!-- 1 ─ Титул -->
+<section class="slide title">
+  <div class="left">
+    <div class="mark"><svg viewBox="0 0 24 24" width="44" height="44"><path d="M4 12.5l5 5L20 6.5" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+    <h1>Conversation Quality Analytics</h1>
+    <div class="sub">Автоматическая оценка работы операторов по&nbsp;чек-листу: чаты и звонки на&nbsp;русском, казахском и&nbsp;английском — с&nbsp;обоснованиями, апелляцией и&nbsp;пересмотром.</div>
+    <div class="stats">
+      <div class="stat"><div class="v">65 / 65</div><div class="l">DEV оценено, status ok</div></div>
+      <div class="stat"><div class="v">10 / 10</div><div class="l">PROD FBroker, status ok</div></div>
+      <div class="stat"><div class="v">$0.054</div><div class="l">средняя стоимость чата</div></div>
+      <div class="stat"><div class="v">≈ 20 с</div><div class="l">на оценку одного чата</div></div>
+    </div>
+    <div class="team">
+      <div class="t1">Команда</div>
+      <div class="t2">room-801</div>
+      <div class="t3">Freedom Broker · CQA Hackathon</div>
+    </div>
+  </div>
+  <div class="right"><img src="img/01-overview.png" alt=""></div>
+</section>
+
+<!-- 2 ─ Задача и решение -->
+<section class="slide">
+  <div class="kicker">Задача → решение</div>
+  <h1>Оба контура из гайда работают в одном интерфейсе</h1>
+  <div class="body" style="gap:40px">
+    <div class="col" style="flex:1">
+      <div class="card">
+        <h2>Контур 1 · Оценка</h2>
+        <ul class="bullets" style="margin-top:22px">
+          <li><b>Чек-лист настраивается</b> — критерии, веса, тип ответа, N/A, шкалы; новая версия применяется сразу</li>
+          <li><b>Оценка выбранного диалога</b> — RU / KZ / EN, бот и системные события как контекст</li>
+          <li><b>Результат</b> — ответ, баллы, вес, обоснование, реплика-доказательство, проверенный участок, причина N/A</li>
+          <li><b>Итог по правилам</b> — перераспределение веса N/A, округление, грубая ошибка отдельно</li>
+        </ul>
+      </div>
+    </div>
+    <div class="col" style="flex:1">
+      <div class="card">
+        <h2>Контур 2 · Работа с результатом</h2>
+        <ul class="bullets" style="margin-top:22px">
+          <li><b>Карточка диалога</b> — ссылка из обоснования ведёт к реплике; у звонков — плеер и перемотка</li>
+          <li><b>Апелляция</b> — оператор оспаривает критерий с комментарием</li>
+          <li><b>Решение проверяющего</b> — подтвердить или изменить с причиной, итог пересчитывается сразу</li>
+          <li><b>Плюс для бизнеса</b> — дашборд руководителя: средний балл, грубые ошибки, слабое место команды</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA</span><span>2</span></div>
+</section>
+
+<!-- 3 ─ Архитектура -->
+<section class="slide">
+  <div class="kicker">Архитектура</div>
+  <h1>Чистый фронтенд + локальный сервер</h1>
+  <div class="arch" style="margin-top:40px">
+    <svg class="wires" viewBox="0 0 1712 760" preserveAspectRatio="none">
+      <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto"><path d="M0 0L10 5L0 10z" fill="#12a150"/></marker></defs>
+      <path d="M470 250 L640 250" stroke="#12a150" stroke-width="4" fill="none" marker-end="url(#ar)"/>
+      <path d="M1100 180 L1270 120" stroke="#12a150" stroke-width="4" fill="none" marker-end="url(#ar)"/>
+      <path d="M1100 300 L1270 360" stroke="#12a150" stroke-width="4" fill="none" marker-end="url(#ar)"/>
+      <path d="M870 386 L870 548" stroke="#12a150" stroke-width="4" fill="none" marker-end="url(#ar)"/>
+    </svg>
+    <div class="node" style="left:0; top:90px; width:470px">
+      <div class="tag">Браузер</div>
+      <h3>HTML · CSS · JS</h3>
+      <ul>
+        <li>без сборки и фреймворков</li>
+        <li>всё в корне <span class="mono">#cqa-app</span>, адрес API — в <span class="mono">CQA_CONFIG</span></li>
+        <li>готов к HTML web resource <b>Dynamics 365</b></li>
+      </ul>
+    </div>
+    <div class="node accent" style="left:640px; top:40px; width:460px">
+      <div class="tag">Node.js · backend/</div>
+      <h3>Локальный сервер</h3>
+      <ul>
+        <li>обход CORS: запросы к API организаторов идут с сервера</li>
+        <li>mp3 звонка из страницы плеера <span class="mono">audio_url</span></li>
+        <li>ключ модели не попадает в браузер</li>
+        <li>чек-листы, оценки, апелляции — JSON</li>
+      </ul>
+    </div>
+    <div class="node" style="left:1270px; top:10px; width:442px">
+      <div class="tag">GET ?group_id=</div>
+      <h3>API организаторов</h3>
+      <ul><li>DEV · FBroker · Swap</li><li>проверка isSuccess и total_records</li></ul>
+    </div>
+    <div class="node dark" style="left:1270px; top:280px; width:442px">
+      <div class="tag">Anthropic API</div>
+      <h3>Claude Opus 5.5</h3>
+      <ul><li>строгая JSON-схема ответа</li><li>проверка по чек-листу + 1 повтор</li></ul>
+    </div>
+    <div class="node" style="left:640px; top:560px; width:1072px">
+      <div class="tag">Сдача результатов</div>
+      <h3>generate_results.js → <span class="mono" style="font-size:24px">results/dev/results.json · results/prod/results.json</span></h3>
+      <ul><li>JSON 1.0 из приложения · пауза и повторы при 429 · прогресс после каждого диалога · проверка формата перед записью</li></ul>
+    </div>
+    <div class="wire-label" style="left:500px; top:200px">/api/*</div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA</span><span>3</span></div>
+</section>
+
+<!-- 4 ─ Демо 1: интерфейс -->
+<section class="slide" style="padding-bottom:60px">
+  <div class="kicker">Демо · 1 минута</div>
+  <h1>Интерфейс и выбранный диалог</h1>
+  <div style="position:relative; margin-top:36px; flex:1">
+    <img class="shot" src="img/01-overview.png" style="height:700px; width:auto; position:absolute; left:400px; top:0">
+    <div class="callout" style="left:0; top:120px"><span class="num">1</span>Чек-лист слева</div>
+    <div class="callout" style="left:0; top:250px"><span class="num">2</span>Дашборд руководителя</div>
+    <div class="callout" style="left:0; top:380px"><span class="num">3</span>Выбор диалога</div>
+    <div class="callout" style="left:0; top:510px"><span class="num">4</span>Транскрипт</div>
+    <div class="callout" style="left:0; top:640px"><span class="num">5</span>Итог и обоснования</div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA · реальный экран, диалог p1-ru-008 из DEV</span><span>4</span></div>
+</section>
+
+<!-- 5 ─ Демо 2: обоснование и переход к реплике -->
+<section class="slide">
+  <div class="kicker">Демо · 2 минуты</div>
+  <h1>Каждый вывод — со ссылкой на реплику</h1>
+  <div class="body" style="gap:52px; align-items:flex-start">
+    <div class="col" style="width:1040px; flex:none; gap:24px">
+      <img class="shot" src="img/02-evidence.png" style="width:1040px">
+      <div style="display:flex; gap:24px; align-items:center">
+        <img class="shot" src="img/03-score.png" style="width:420px">
+        <div class="card" style="flex:1; padding:24px 28px"><p style="font-size:23px; color:var(--ink-2)"><b>Итог 84.62</b> при двух N/A: веса «Выявления потребности» и «Идентификации» распределены между применимыми критериями.</p></div>
+      </div>
+    </div>
+    <div class="col" style="flex:1; padding-top:6px">
+      <ul class="bullets">
+        <li><b>Клик по обоснованию</b> подсвечивает реплику в чате и прокручивает к ней</li>
+        <li><b>Пропущенное действие</b> — указан проверенный участок <span class="mono">#12–#14</span></li>
+        <li><b>N/A объясняется</b>: «данных для ответа хватало с самого начала»</li>
+        <li><b>Номера реплик</b> — с 1 по всему транскрипту, как <span class="mono">evidence_turns</span> в JSON 1.0</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA · «Завершение — Нет»: прощание есть, итога и предложения помощи нет</span><span>5</span></div>
+</section>
+
+<!-- 6 ─ Как считается итог -->
+<section class="slide">
+  <div class="kicker">Итоговый балл</div>
+  <h1>Итог считает код, а не модель</h1>
+  <div class="body" style="gap:52px">
+    <div class="col" style="flex:1.05; gap:26px">
+      <div class="step"><span class="num">1</span><div class="txt"><b>Да</b> — полный вес, <b>Нет</b> — 0, шкала — пропорционально<small>верхняя ступень даёт полный вес критерия</small></div></div>
+      <div class="step"><span class="num">2</span><div class="txt"><b>N/A</b> исключается, его вес делится между применимыми<small>максимум всегда остаётся 100</small></div></div>
+      <div class="step"><span class="num">3</span><div class="txt">Округление до двух знаков<small>нет применимых критериев → итог не рассчитывается</small></div></div>
+      <div class="step"><span class="num">4</span><div class="txt"><b>Грубая ошибка</b> — отдельный флаг<small><span class="mono">critical_flag</span> не обнуляет итог</small></div></div>
+    </div>
+    <div class="col" style="flex:1">
+      <div class="card">
+        <h2>Пример из приложения организаторов</h2>
+        <p class="mono" style="font-size:21px; line-height:1.7; color:var(--ink-2)">contact ✓ · discovery N/A · identification N/A<br>consultation 15 · empathy ✓ · dialogue 7 · closure ✓</p>
+        <p style="margin-top:14px">применимый вес 65 → баллы 10 + 15 + 15 + 10.5 + 5 = 55.5</p>
+        <div style="display:flex; align-items:baseline; gap:18px; margin-top:16px"><span class="big green">85.38</span><span class="pill pill--ok">совпадает с эталоном</span></div>
+      </div>
+      <div class="card">
+        <h2>Проверено на реальных данных</h2>
+        <p>Тест стабильности: 9 диалогов RU / KZ / EN, <b>19 проверок</b> расчёта на каждом — включая стресс «всё N/A». Бэкенд и фронтенд дают одинаковый итог.</p>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA</span><span>6</span></div>
+</section>
+
+<!-- 7 ─ Демо 3: апелляция -->
+<section class="slide">
+  <div class="kicker">Демо · 1 минута</div>
+  <h1>Апелляция и решение проверяющего</h1>
+  <div class="body" style="gap:40px; align-items:flex-start">
+    <img class="shot" src="img/04-review-form.png" style="height:720px; width:auto">
+    <div class="col" style="flex:1; gap:30px">
+      <ul class="bullets">
+        <li><b>Оператор</b> оспаривает «Завершение»: итог подведён в #12</li>
+        <li><b>Проверяющий</b> видит спорную оценку, комментарий и фрагмент диалога</li>
+        <li>Выбирает новую оценку, указывает причину — <b>итог пересчитан сразу</b></li>
+        <li>В карточке остаются исходная оценка, решение и финальный результат</li>
+      </ul>
+      <div style="display:flex; align-items:center; gap:34px; margin-top:10px">
+        <div class="card" style="padding:26px 34px; text-align:center"><div class="muted" style="font-size:20px; font-weight:700; letter-spacing:.08em; text-transform:uppercase">Исходная</div><div class="big" style="margin-top:8px; color:var(--amber)">84.62</div></div>
+        <div class="arrow-big">→</div>
+        <div class="card" style="padding:26px 34px; text-align:center; border-color:var(--green)"><div class="muted" style="font-size:20px; font-weight:700; letter-spacing:.08em; text-transform:uppercase">После пересмотра</div><div class="big green" style="margin-top:8px">92.31</div></div>
+      </div>
+      <div class="crop" style="width:560px; height:250px"><img src="img/05-review-result.png" style="width:560px; left:0; top:0"></div>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA · режим «Оператор / Проверяющий» — без регистрации</span><span>7</span></div>
+</section>
+
+<!-- 8 ─ Демо 4: изменение критерия -->
+<section class="slide">
+  <div class="kicker">Демо · 1 минута</div>
+  <h1>Изменение критерия — сразу в оценке</h1>
+  <div class="body" style="gap:52px; align-items:flex-start">
+    <div class="crop" style="width:520px; height:720px; flex:none"><img src="img/08-checklist.png" style="width:520px; left:0; top:0"></div>
+    <div class="col" style="flex:1; gap:28px">
+      <ul class="bullets">
+        <li><b>Промпт модели собирается из чек-листа</b>: названия, описания, веса, N/A и шкалы не захардкожены</li>
+        <li>«Оценить» сохраняет несохранённые правки и оценивает по новой версии</li>
+        <li><b>Код критерия</b> редактируется — для замены критерия по кодам организаторов</li>
+        <li>«Новая версия» хранит v1 и v2 — можно показать «было / стало»</li>
+      </ul>
+      <div class="card">
+        <h2>Проверено вживую на p1-ru-001</h2>
+        <p>Правило «Завершения» → «вежливо попрощался», веса 06/07 → 10/10.</p>
+        <div style="display:flex; gap:16px; margin-top:18px; flex-wrap:wrap">
+          <span class="pill pill--bad">было: Нет · 93.75</span><span class="pill pill--ok">стало: Да · 100</span><span class="pill">модель вернула вес 10</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA</span><span>8</span></div>
+</section>
+
+<!-- 9 ─ Звонки -->
+<section class="slide" style="padding-bottom:60px">
+  <div class="kicker">Звонки · voice call</div>
+  <h1>Плеер записи и перемотка к доказательству</h1>
+  <div class="body" style="gap:44px; margin-top:36px; align-items:flex-start">
+    <img class="shot" src="img/07-call-dark.png" style="width:1160px">
+    <div class="col" style="flex:1">
+      <ul class="bullets">
+        <li><b>Шкала — активность речи</b> по транскрипту: высота — сколько сказано, цвет — оператор / клиент</li>
+        <li><b>Клик по обоснованию</b> подсвечивает реплику и перематывает запись</li>
+        <li>Звучащая реплика отмечается в чате</li>
+        <li>Расшифровка: обрывы и слова-паразиты <b>не снижают</b> оценку</li>
+        <li>Тёмная тема — по системе или кнопкой</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA · p4-ru-003, 78 реплик, запись 06:33</span><span>9</span></div>
+</section>
+
+<!-- 10 ─ Качество оценки LLM -->
+<section class="slide">
+  <div class="kicker">Модель</div>
+  <h1>Как мы удерживаем LLM в рамках</h1>
+  <div class="body" style="gap:48px">
+    <div class="col" style="flex:1">
+      <ul class="bullets">
+        <li><b>«Нет» ≠ N/A</b>: «Нет» — действие было нужно и пропущено, N/A — выполнено условие неприменимости</li>
+        <li><b>Анти-галлюцинация</b>: засчитывается только то, что явно подтверждено репликой</li>
+        <li><b>Строгая JSON-схема</b> (structured outputs) — модель не может вернуть другую структуру</li>
+        <li><b>Проверка по чек-листу</b>: типы value, ступени шкалы, номера реплик → при нарушении 1 повтор с перечнем ошибок</li>
+        <li><b>Корпоративный стиль</b> обоснований, без эмоциональных оценок</li>
+      </ul>
+    </div>
+    <div class="col" style="width:760px; flex:none">
+<pre class="code"><span class="c">// запись JSON 1.0 · p1-kz-001</span>
+{ <span class="k">"conversation_id"</span>: <span class="s">"p1-kz-001"</span>,
+  <span class="k">"status"</span>: <span class="s">"ok"</span>,
+  <span class="k">"criteria"</span>: [
+    { <span class="k">"criterion_id"</span>: <span class="s">"contact"</span>,
+      <span class="k">"value"</span>: <span class="n">true</span>,
+      <span class="k">"rationale"</span>: <span class="s">"Требование выполнено:</span>
+<span class="s">        поздоровался на казахском (#10)."</span>,
+      <span class="k">"evidence_turns"</span>: [<span class="n">10</span>] },
+    { <span class="k">"criterion_id"</span>: <span class="s">"identification"</span>,
+      <span class="k">"value"</span>: <span class="n">null</span>, <span class="c">…</span> },
+    <span class="c">…</span> ],
+  <span class="k">"score"</span>: { <span class="k">"final_score"</span>: <span class="n">93.75</span>,
+             <span class="k">"critical_flag"</span>: <span class="n">false</span> } }</pre>
+      <div class="card" style="padding:22px 28px"><p style="font-size:22px">Сбой модели → <span class="mono">status: "error"</span>, пустой <span class="mono">criteria</span>, <span class="mono">score: null</span> и причина — как требует приложение.</p></div>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA</span><span>10</span></div>
+</section>
+
+<!-- 11 ─ Результаты и стоимость -->
+<section class="slide">
+  <div class="kicker">Результаты</div>
+  <h1>Все диалоги оценены, формат проверен</h1>
+  <div class="body" style="gap:52px">
+    <div class="col" style="flex:1.25">
+      <div class="card" style="padding:30px 20px 14px">
+        <table>
+          <tr><th>Набор</th><th class="r">Диалогов</th><th class="r">Статус</th><th class="r">Стоимость</th><th class="r">За диалог</th></tr>
+          <tr><td>DEV · 60 чатов + 5 звонков</td><td class="r">65</td><td class="r"><span class="pill pill--ok">65 ok</span></td><td class="r">$3.51</td><td class="r">$0.054</td></tr>
+          <tr><td>PROD · FBroker</td><td class="r">10</td><td class="r"><span class="pill pill--ok">10 ok</span></td><td class="r">$0.52</td><td class="r">$0.052</td></tr>
+          <tr class="total"><td>Всего</td><td class="r">75</td><td class="r"></td><td class="r">$4.03</td><td class="r green">$0.054</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <p><span class="mono" style="color:var(--ink)">results/dev/results.json</span> и <span class="mono" style="color:var(--ink)">results/prod/results.json</span> — JSON 1.0: ID совпадают с API, каждая запись проверена валидатором, итоги совпадают с пересчётом.</p>
+      </div>
+    </div>
+    <div class="col" style="flex:1">
+      <div class="card">
+        <div class="muted" style="font-size:20px; font-weight:700; letter-spacing:.08em; text-transform:uppercase">Модель</div>
+        <div style="font-size:42px; font-weight:800; margin-top:8px">Claude Opus 5.5</div>
+        <div class="mono muted" style="font-size:22px; margin-top:6px">claude-opus-5-5 · external_api</div>
+      </div>
+      <div class="card">
+        <div class="muted" style="font-size:20px; font-weight:700; letter-spacing:.08em; text-transform:uppercase">Стоимость одной оценки</div>
+        <div style="display:flex; align-items:baseline; gap:14px; margin-top:8px"><span class="big green">$0.054</span><span class="muted" style="font-size:24px">· ≈ 20 с на чат</span></div>
+        <p style="margin-top:12px; font-size:21px">Один вызов модели; системный промпт с чек-листом кэшируется. Звонок ~80 реплик — $0.08–0.12.</p>
+      </div>
+      <div class="card" style="display:flex; gap:20px; align-items:center"><span class="big red" style="font-size:64px">8</span><p>грубых ошибок найдено (7 в DEV, 1 в PROD) — каждая подтверждается текстом реплики</p></div>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA</span><span>11</span></div>
+</section>
+
+<!-- 12 ─ Для бизнеса и надёжность -->
+<section class="slide">
+  <div class="kicker">Готовность к продукту</div>
+  <h1>Для руководителя и для эксплуатации</h1>
+  <div class="body" style="gap:48px; align-items:flex-start">
+    <div class="crop" style="width:968px; height:640px">
+      <img src="img/06-critical.png" style="width:1440px; left:-472px; top:-150px">
+    </div>
+    <div class="col" style="flex:1">
+      <ul class="bullets">
+        <li><b>Дашборд</b>: средний балл, грубые ошибки (клик — к диалогу), критерий, где теряют больше всего — по финальным оценкам с учётом апелляций</li>
+        <li><b>Не падает</b>: таймауты, обрыв сети, неполный JSON — понятное уведомление и «Повторить», без белого экрана</li>
+        <li><b>Скелетная загрузка</b> вместо спиннеров</li>
+        <li><b>Dynamics 365</b>: один корневой элемент, стили изолированы, адрес API настраивается</li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA · p1-ru-022: «Скиньте деньги мне на карту» → грубая ошибка</span><span>12</span></div>
+</section>
+
+<!-- 13 ─ Итог -->
+<section class="slide">
+  <div class="kicker">Итог</div>
+  <h1>Запуск за три команды</h1>
+  <div class="body" style="gap:52px">
+    <div class="col" style="flex:1.1">
+<pre class="code" style="font-size:23px"><span class="c"># 1. зависимости и настройки</span>
+cd backend && npm install
+cp .env.example .env   <span class="c"># ключ API и ссылка организаторов</span>
+
+<span class="c"># 2. набор и сервер</span>
+npm run fetch && npm start   <span class="c"># → http://localhost:3000</span>
+
+<span class="c"># 3. результаты для сдачи</span>
+npm run results:dev
+node generate_results.js --prod --group=FBroker</pre>
+      <div class="card"><p style="font-size:26px; color:var(--ink)"><b>github.com/MedgatAuken/DataChallengeFreedom</b></p><p style="margin-top:6px">README: архитектура, запуск, формат, стоимость, ограничения</p></div>
+    </div>
+    <div class="col" style="flex:1">
+      <div class="card">
+        <h2>Честно об ограничениях</h2>
+        <ul class="bullets" style="margin-top:18px; gap:18px">
+          <li style="font-size:24px">Звонки оцениваются по транскрипту; интонацию и дикцию без анализа звука не оцениваем</li>
+          <li style="font-size:24px">LLM недетерминирована: в пограничных случаях оценка критерия может отличаться между прогонами — для этого есть апелляция</li>
+          <li style="font-size:24px">Хранилище — JSON на одном сервере; роли — симуляция без авторизации</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+  <div class="footer"><span><b>room-801</b> · CQA · Freedom Broker Hackathon</span><span>13</span></div>
+</section>
+
+</body>
+</html>
