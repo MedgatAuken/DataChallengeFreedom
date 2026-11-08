@@ -1,6 +1,6 @@
 # CQA — Conversation Quality Analytics
 
-**Команда: room-801** · хакатон Freedom Broker / CQA
+**Команда: 801** · хакатон Freedom Broker / CQA
 
 Прототип системы контроля качества работы операторов для хакатона **Freedom Broker**.
 Система оценивает чаты и звонки на русском, казахском и английском по настраиваемому чек-листу
@@ -9,7 +9,7 @@
 
 | | |
 |---|---|
-| **Команда** | room-801 |
+| **Команда** | 801 |
 | **LLM** | Claude Opus 5.5 (`claude-opus-5-5`, Anthropic API, режим `external_api`) |
 | **Средняя стоимость оценки одного чата** | **≈ $0.054** (75 диалогов DEV + PROD: $4.03 всего) |
 | **Время оценки** | ≈ 20 секунд на чат, ≈ 30 секунд на звонок |
@@ -484,7 +484,7 @@ results/
 | `CQA_MODEL` | `claude-opus-5-5` | Модель оценки |
 | `CQA_EFFORT` | `high` | Глубина рассуждений: `low`, `medium`, `high`, `xhigh`, `max` |
 | `CQA_GROUP_ID` | `DEV` | Набор по умолчанию |
-| `CQA_TEAM_NAME` | `room-801` | `team_name` в results.json |
+| `CQA_TEAM_NAME` | `801` | `team_name` в results.json |
 | `PORT` | `3000` | Порт сервера |
 
 **Встраивание в Dynamics 365.** Загрузите `index.html`, `style.css` и `app.js` как веб-ресурсы

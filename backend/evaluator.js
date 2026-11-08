@@ -22,7 +22,7 @@ export const MODEL = process.env.CQA_MODEL || 'claude-opus-5-5';
 export const EFFORT = process.env.CQA_EFFORT || 'high';
 
 export const SCHEMA_VERSION = '1.0';
-export const TEAM_NAME = process.env.CQA_TEAM_NAME || 'room-801';
+export const TEAM_NAME = process.env.CQA_TEAM_NAME || '801';
 export const MODEL_MODE = 'external_api'; // local | external_api | hybrid
 
 /* =====================================================================
